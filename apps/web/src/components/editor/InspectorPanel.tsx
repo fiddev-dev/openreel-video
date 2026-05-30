@@ -1307,6 +1307,7 @@ export const InspectorPanel: React.FC = () => {
                     max={1920}
                     step={1}
                     unit="px"
+                    defaultValue={0}
                   />
                   <LabeledSlider
                     label="Position Y"
@@ -1320,6 +1321,7 @@ export const InspectorPanel: React.FC = () => {
                     max={1080}
                     step={1}
                     unit="px"
+                    defaultValue={0}
                   />
                   <LabeledSlider
                     label="Scale X"
@@ -1333,6 +1335,7 @@ export const InspectorPanel: React.FC = () => {
                     max={300}
                     step={1}
                     unit="%"
+                    defaultValue={100}
                   />
                   <LabeledSlider
                     label="Scale Y"
@@ -1346,6 +1349,7 @@ export const InspectorPanel: React.FC = () => {
                     max={300}
                     step={1}
                     unit="%"
+                    defaultValue={100}
                   />
                   <LabeledSlider
                     label="Rotation"
@@ -1355,6 +1359,7 @@ export const InspectorPanel: React.FC = () => {
                     max={180}
                     step={1}
                     unit="°"
+                    defaultValue={0}
                   />
                   <LabeledSlider
                     label="Opacity"
@@ -1366,6 +1371,7 @@ export const InspectorPanel: React.FC = () => {
                     max={100}
                     step={1}
                     unit="%"
+                    defaultValue={100}
                   />
                   <LabeledSlider
                     label="Border Radius"
@@ -1377,6 +1383,7 @@ export const InspectorPanel: React.FC = () => {
                     max={200}
                     step={1}
                     unit="px"
+                    defaultValue={0}
                   />
                   {(clipType === "image" || clipType === "video") && (
                     <div className="space-y-1 pt-2 border-t border-border">
