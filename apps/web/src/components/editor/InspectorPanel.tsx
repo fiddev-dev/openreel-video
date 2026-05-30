@@ -83,6 +83,14 @@ import {
   SelectGroup,
   SelectLabel,
 } from "@openreel/ui";
+import {
+  getTabsForClipType,
+  getTabIdsForClipType,
+  type InspectorClipType,
+  type InspectorTabId,
+} from "./inspector/clip-tabs.config";
+import { InspectorTabs } from "./inspector/shell/InspectorTabs";
+import { InspectorClipHeader } from "./inspector/shell/InspectorClipHeader";
 
 // Initialize engines as singletons
 const chromaKeyEngine = new ChromaKeyEngine({ width: 1920, height: 1080 });
@@ -909,86 +917,55 @@ export const InspectorPanel: React.FC = () => {
     clipType === "svg" ||
     clipType === "sticker";
 
-  // Inspector tab anchors. Each tab scrolls the body to a section with
-  // the matching data-inspector-tab="<id>" attribute. AI Stylize is
-  // permanently visible — it has its own dedicated panel via the
-  // inspector AIGenTab.
-  const inspectorTabs: Array<{ id: string; label: string; ai?: boolean }> = [
-    { id: "video", label: "Video" },
-    { id: "audio", label: "Audio" },
-    { id: "speed", label: "Speed" },
-    { id: "animation", label: "Animation", ai: true },
-    { id: "adjust", label: "Adjust" },
-    { id: "ai-stylize", label: "AI stylize" },
-  ];
-  const [activeInspectorTab, setActiveInspectorTab] = useState<string>("video");
-  const inspectorBodyRef = useRef<HTMLDivElement>(null);
-
-  const scrollToInspectorTab = useCallback(
-    (id: string) => {
-      setActiveInspectorTab(id);
-      const root = inspectorBodyRef.current;
-      if (!root) return;
-      const target = root.querySelector<HTMLElement>(
-        `[data-inspector-tab="${id}"]`,
-      );
-      if (target) {
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    },
-    [],
+  const tabs = useMemo(
+    () => getTabsForClipType(clipType as InspectorClipType | null),
+    [clipType],
   );
+  const tabIds = useMemo(
+    () => getTabIdsForClipType(clipType as InspectorClipType | null),
+    [clipType],
+  );
+  const inspectorActiveTab = useUIStore((s) => s.inspectorActiveTab);
+  const setInspectorActiveTab = useUIStore((s) => s.setInspectorActiveTab);
+
+  const activeTab: InspectorTabId =
+    (tabIds.includes(inspectorActiveTab as InspectorTabId)
+      ? (inspectorActiveTab as InspectorTabId)
+      : tabIds[0]) ?? ("transform" as InspectorTabId);
+
+  useEffect(() => {
+    if (
+      tabIds.length > 0 &&
+      !tabIds.includes(inspectorActiveTab as InspectorTabId)
+    ) {
+      setInspectorActiveTab(tabIds[0]);
+    }
+  }, [tabIds, inspectorActiveTab, setInspectorActiveTab]);
 
   return (
     <div
       data-tour="inspector"
       className="w-full min-w-0 bg-bg-1 flex flex-col h-full"
     >
-      {/* ── Inspector tab strip (mockup style) ────────────────── */}
-      <div className="flex items-center px-3.5 py-2 border-b border-border gap-3.5 min-h-[38px] overflow-x-auto scrollbar-none shrink-0">
-        {inspectorTabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => scrollToInspectorTab(t.id)}
-            className={`text-[12.5px] font-medium whitespace-nowrap flex items-center gap-1 transition-colors ${
-              activeInspectorTab === t.id
-                ? "text-accent"
-                : "text-fg-3 hover:text-fg"
-            }`}
-          >
-            <span>{t.label}</span>
-            {t.ai && (
-              <span className="w-3 h-3 rounded-sm inline-block bg-gradient-to-br from-purple-400 to-blue-400" />
-            )}
-          </button>
-        ))}
-        {selectedClip && (
-          <>
-            <span className="ml-auto w-px h-3.5 bg-border" />
-            <span className="text-[11px] text-fg-3 font-mono">
-              {selectedClip.duration.toFixed(2)}s
-            </span>
-          </>
-        )}
-      </div>
+      {selectedClip && tabs.length > 0 && (
+        <>
+          <InspectorClipHeader
+            name={`${selectedClip.id.substring(0, 20)}…`}
+            durationSeconds={selectedClip.duration}
+            typeLabel={clipType ?? "clip"}
+          />
+          <InspectorTabs
+            tabs={tabs}
+            activeId={activeTab}
+            onSelect={(id) => setInspectorActiveTab(id)}
+          />
+        </>
+      )}
 
-      <div
-        ref={inspectorBodyRef}
-        className="overflow-y-auto flex-1 min-h-0 pb-3.5 custom-scrollbar"
-      >
+      <div className="overflow-y-auto flex-1 min-h-0 pb-3.5 custom-scrollbar">
       <div className="px-4 pt-3">
         {selectedClip ? (
           <>
-            {/* Clip Info */}
-            <div className="mb-3 p-2.5 bg-bg-2 rounded-md border border-border">
-              <p className="text-[11.5px] text-fg font-medium truncate">
-                {selectedClip.id.substring(0, 20)}…
-              </p>
-              <p className="text-[10px] text-fg-muted mt-0.5">
-                Duration: {selectedClip.duration.toFixed(2)}s
-              </p>
-            </div>
-
             {showVideoControls && selectedTimelineClip && (appliedEditingTemplates.length > 0 || (selectedTimelineClip.effects && selectedTimelineClip.effects.length > 0)) && (
               <Section
                 title={`Applied (${appliedEditingTemplates.length + (selectedTimelineClip.effects?.filter((e: { metadata?: { templateSource?: unknown } }) => !e.metadata?.templateSource).length || 0)})`}
