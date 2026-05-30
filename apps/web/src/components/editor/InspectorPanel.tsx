@@ -4,7 +4,7 @@ import { useProjectStore } from "../../stores/project-store";
 import { useTimelineStore } from "../../stores/timeline-store";
 import { useUIStore } from "../../stores/ui-store";
 import { useEngineStore } from "../../stores/engine-store";
-import type { Transform, FitMode, Clip, EditingTemplatePrimitive } from "@openreel/core";
+import type { Transform, EditingTemplatePrimitive } from "@openreel/core";
 import {
   ChromaKeyEngine,
   initializeTranscriptionService,
@@ -21,16 +21,12 @@ import {
   GreenScreenSection,
   PiPSection,
   MaskSection,
-  BlendingSection,
-  Transform3DSection,
   MotionTrackingSection,
   NestedSequenceSection,
   AdjustmentLayerSection,
   BackgroundRemovalSection,
   AutoReframeSection,
-  CropSection,
   ParticleEffectsSection,
-  AlignmentSection,
   BehindSubjectSection,
 } from "./inspector";
 import { OPENREEL_TRANSCRIBE_URL } from "../../config/api-endpoints";
@@ -78,6 +74,7 @@ import { InspectorTabErrorBoundary } from "./inspector/shell/InspectorTabErrorBo
 import { InspectorSection } from "./inspector/shell/InspectorSection";
 import { ColorTab } from "./inspector/tabs/ColorTab";
 import { AudioTab } from "./inspector/tabs/AudioTab";
+import { TransformTab } from "./inspector/tabs/TransformTab";
 import { SpeedTab } from "./inspector/tabs/SpeedTab";
 import { AnimateTab } from "./inspector/tabs/AnimateTab";
 import { StyleTab } from "./inspector/tabs/StyleTab";
@@ -1241,152 +1238,15 @@ export const InspectorPanel: React.FC = () => {
             </InspectorTabPanel>
 
             <InspectorTabPanel tab="transform" active={activeTab}>
-            {/* Transform */}
-            {showTransformControls && (
-              <>
-              <div data-inspector-tab="video" />
-              <Section title="Transform" sectionId="transform">
-                <div className="space-y-3">
-                  <LabeledSlider
-                    label="Position X"
-                    value={transform.position.x}
-                    onChange={(x) =>
-                      handleTransformChange({
-                        position: { ...transform.position, x },
-                      })
-                    }
-                    min={-1920}
-                    max={1920}
-                    step={1}
-                    unit="px"
-                    defaultValue={0}
-                  />
-                  <LabeledSlider
-                    label="Position Y"
-                    value={transform.position.y}
-                    onChange={(y) =>
-                      handleTransformChange({
-                        position: { ...transform.position, y },
-                      })
-                    }
-                    min={-1080}
-                    max={1080}
-                    step={1}
-                    unit="px"
-                    defaultValue={0}
-                  />
-                  <LabeledSlider
-                    label="Scale X"
-                    value={transform.scale.x * 100}
-                    onChange={(x) =>
-                      handleTransformChange({
-                        scale: { ...transform.scale, x: x / 100 },
-                      })
-                    }
-                    min={0}
-                    max={300}
-                    step={1}
-                    unit="%"
-                    defaultValue={100}
-                  />
-                  <LabeledSlider
-                    label="Scale Y"
-                    value={transform.scale.y * 100}
-                    onChange={(y) =>
-                      handleTransformChange({
-                        scale: { ...transform.scale, y: y / 100 },
-                      })
-                    }
-                    min={0}
-                    max={300}
-                    step={1}
-                    unit="%"
-                    defaultValue={100}
-                  />
-                  <LabeledSlider
-                    label="Rotation"
-                    value={transform.rotation}
-                    onChange={(rotation) => handleTransformChange({ rotation })}
-                    min={-180}
-                    max={180}
-                    step={1}
-                    unit="°"
-                    defaultValue={0}
-                  />
-                  <LabeledSlider
-                    label="Opacity"
-                    value={transform.opacity * 100}
-                    onChange={(opacity) =>
-                      handleTransformChange({ opacity: opacity / 100 })
-                    }
-                    min={0}
-                    max={100}
-                    step={1}
-                    unit="%"
-                    defaultValue={100}
-                  />
-                  <LabeledSlider
-                    label="Border Radius"
-                    value={transform.borderRadius || 0}
-                    onChange={(borderRadius) =>
-                      handleTransformChange({ borderRadius })
-                    }
-                    min={0}
-                    max={200}
-                    step={1}
-                    unit="px"
-                    defaultValue={0}
-                  />
-                  {(clipType === "image" || clipType === "video") && (
-                    <div className="space-y-1 pt-2 border-t border-border">
-                      <span className="text-[10px] text-text-secondary">
-                        Fit Mode
-                      </span>
-                      <div className="grid grid-cols-4 gap-1">
-                        {(
-                          ["none", "contain", "cover", "stretch"] as FitMode[]
-                        ).map((mode) => (
-                          <button
-                            key={mode}
-                            onClick={() =>
-                              handleTransformChange({ fitMode: mode })
-                            }
-                            className={`py-1.5 rounded text-[9px] capitalize transition-colors ${
-                              (transform.fitMode || "none") === mode
-                                ? "bg-primary text-white"
-                                : "bg-background-tertiary border border-border text-text-secondary hover:text-text-primary"
-                            }`}
-                          >
-                            {mode === "contain"
-                              ? "Fit"
-                              : mode === "cover"
-                                ? "Fill"
-                                : mode === "none"
-                                  ? "Original"
-                                  : mode}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </Section>
-              </>
-            )}
-            </InspectorTabPanel>
-
-            <InspectorTabPanel tab="transform" active={activeTab}>
-            {/* Crop */}
-            {showVideoControls &&
-              selectedClip &&
-              !selectedClip.mediaId.startsWith("text-") &&
-              !selectedClip.mediaId.startsWith("shape-") &&
-              !selectedClip.mediaId.startsWith("svg-") &&
-              !selectedClip.mediaId.startsWith("sticker-") && (
-                <Section title="Crop" sectionId="crop" defaultOpen={false}>
-                  <CropSection clip={selectedClip as Clip} />
-                </Section>
-              )}
+              <TransformTab
+                clipId={clipId}
+                clipType={clipType}
+                selectedClip={selectedClip}
+                showTransformControls={showTransformControls}
+                showVideoControls={showVideoControls}
+                transform={transform}
+                handleTransformChange={handleTransformChange}
+              />
             </InspectorTabPanel>
 
             <InspectorTabPanel tab="speed" active={activeTab}>
@@ -1394,60 +1254,6 @@ export const InspectorPanel: React.FC = () => {
                 showVideoControls={showVideoControls}
                 selectedClip={selectedClip}
               />
-            </InspectorTabPanel>
-
-            <InspectorTabPanel tab="transform" active={activeTab}>
-            {/* Alignment - Position element on canvas */}
-            {(clipType === "video" ||
-              clipType === "image" ||
-              clipType === "text" ||
-              clipType === "shape" ||
-              clipType === "svg" ||
-              clipType === "sticker") && (
-              <Section
-                title="Alignment"
-                sectionId="alignment"
-                defaultOpen={false}
-              >
-                <AlignmentSection clipId={clipId} />
-              </Section>
-            )}
-            </InspectorTabPanel>
-
-            <InspectorTabPanel tab="transform" active={activeTab}>
-            {/* Blending - Layer compositing blend modes */}
-            {(clipType === "video" ||
-              clipType === "image" ||
-              clipType === "text" ||
-              clipType === "shape" ||
-              clipType === "svg" ||
-              clipType === "sticker") && (
-              <Section
-                title="Blending"
-                sectionId="blending"
-                defaultOpen={false}
-              >
-                <BlendingSection clipId={clipId} />
-              </Section>
-            )}
-            </InspectorTabPanel>
-
-            <InspectorTabPanel tab="transform" active={activeTab}>
-            {/* 3D Transforms - After Effects-style 3D rotation */}
-            {(clipType === "video" ||
-              clipType === "image" ||
-              clipType === "text" ||
-              clipType === "shape" ||
-              clipType === "svg" ||
-              clipType === "sticker") && (
-              <Section
-                title="3D Transforms"
-                sectionId="transform-3d"
-                defaultOpen={false}
-              >
-                <Transform3DSection clipId={clipId} />
-              </Section>
-            )}
             </InspectorTabPanel>
 
             <InspectorTabPanel tab="animate" active={activeTab}>
