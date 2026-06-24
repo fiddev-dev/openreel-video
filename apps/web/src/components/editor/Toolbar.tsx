@@ -47,6 +47,8 @@ import { ScreenRecorder } from "./ScreenRecorder";
 import { HistoryPanel } from "./inspector/HistoryPanel";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { SettingsDialog } from "./settings/SettingsDialog";
+import { ViralClipDialog } from "./dialogs/ViralClipDialog";
+import { useViralClipStore } from "../../stores/viral-clip-store";
 import { toast } from "../../stores/notification-store";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useAnalytics, AnalyticsEvents } from "../../hooks/useAnalytics";
@@ -776,6 +778,19 @@ export const Toolbar: React.FC = () => {
           <TooltipContent>Project JSON / Comments</TooltipContent>
         </Tooltip>
 
+        {/* AI Clip Detector */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => useViralClipStore.getState().setDialogOpen(true)}
+              className="w-[26px] h-[26px] grid place-items-center rounded-md text-fg-2 hover:bg-hover hover:text-fg transition-colors"
+            >
+              <Sparkles size={14} className="text-primary animate-pulse" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>AI Viral Clip Detector</TooltipContent>
+        </Tooltip>
+
         <div className="w-px h-4 bg-border mx-1" />
 
         {/* Pro pill — opens more menu (theme, settings, tours, recorder) */}
@@ -956,6 +971,7 @@ export const Toolbar: React.FC = () => {
       />
 
       <SettingsDialog />
+      <ViralClipDialog />
 
       {isHistoryOpen && (
         <>

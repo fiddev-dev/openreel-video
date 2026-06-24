@@ -10,6 +10,7 @@ import type { MediaItem, Project } from "../types/project";
 import type { TextClip } from "../text/types";
 import type { ShapeClip, EmphasisAnimation } from "../graphics/types";
 import { titleEngine } from "../text/title-engine";
+import { WordHighlightRenderer } from "../text";
 import { graphicsEngine } from "../graphics/graphics-engine";
 import { VideoEffectsEngine } from "./video-effects-engine";
 import { TransitionEngine } from "./transition-engine";
@@ -901,7 +902,7 @@ export class VideoEngine {
     this.renderParticlesToContext(ctx, time, width, height);
 
     for (const subtitle of activeSubtitles) {
-      this.renderSubtitleToCanvasCtx(ctx, subtitle, width, height);
+      this.renderSubtitleToCanvasCtx(ctx, subtitle, time, width, height);
     }
 
     const imageBitmap = await createImageBitmap(canvas);
@@ -1282,9 +1283,20 @@ export class VideoEngine {
   private renderSubtitleToCanvasCtx(
     ctx: OffscreenCanvasRenderingContext2D,
     subtitle: Subtitle,
+    time: number,
     canvasWidth: number,
     canvasHeight: number,
   ): void {
+    if (
+      subtitle.animationStyle &&
+      subtitle.animationStyle !== "none" &&
+      subtitle.words &&
+      subtitle.words.length > 0
+    ) {
+      WordHighlightRenderer.render(ctx, subtitle, time, canvasWidth, canvasHeight);
+      return;
+    }
+
     const { text, style } = subtitle;
     if (!text || text.trim().length === 0) return;
 

@@ -1,3 +1,5 @@
+import { FaceDetector, FilesetResolver } from "@mediapipe/tasks-vision";
+
 export type AspectRatioPreset =
   | "16:9"
   | "9:16"
@@ -164,6 +166,7 @@ type ProgressCallback = (progress: number, message: string) => void;
 export class AutoReframeEngine {
   private canvas: OffscreenCanvas | null = null;
   private ctx: OffscreenCanvasRenderingContext2D | null = null;
+  private faceDetector: FaceDetector | null = null;
   private initialized = false;
   private faceCache: Map<number, DetectedFace[]> = new Map();
 
@@ -174,6 +177,23 @@ export class AutoReframeEngine {
 
     this.canvas = new OffscreenCanvas(1920, 1080);
     this.ctx = this.canvas.getContext("2d");
+
+    try {
+      onProgress?.(30, "Loading MediaPipe Face Detection model...");
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+      this.faceDetector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite",
+          delegate: "GPU",
+        },
+        runningMode: "IMAGE",
+      });
+      onProgress?.(80, "MediaPipe face detection model loaded");
+    } catch (err) {
+      console.warn("[AutoReframeEngine] Failed to load MediaPipe face detection, using skin-color fallback:", err);
+    }
 
     onProgress?.(100, "Auto-reframe engine ready");
     this.initialized = true;
@@ -314,7 +334,32 @@ export class AutoReframeEngine {
       return this.faceCache.get(frameIndex)!;
     }
 
-    const faces = this.detectFacesSimple(frame);
+    let faces: DetectedFace[] = [];
+
+    if (this.faceDetector) {
+      try {
+        const detectionResult = this.faceDetector.detect(frame);
+        if (detectionResult.detections && detectionResult.detections.length > 0) {
+          faces = detectionResult.detections.map((detection) => {
+            const bbox = detection.boundingBox!;
+            return {
+              x: bbox.originX,
+              y: bbox.originY,
+              width: bbox.width,
+              height: bbox.height,
+              confidence: detection.categories[0]?.score ?? 0.8,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn("[AutoReframeEngine] MediaPipe face detection failed, using fallback:", err);
+      }
+    }
+
+    if (faces.length === 0) {
+      faces = this.detectFacesSimple(frame);
+    }
+
     this.faceCache.set(frameIndex, faces);
     return faces;
   }
@@ -629,6 +674,10 @@ export class AutoReframeEngine {
   }
 
   dispose(): void {
+    if (this.faceDetector) {
+      this.faceDetector.close();
+      this.faceDetector = null;
+    }
     this.canvas = null;
     this.ctx = null;
     this.faceCache.clear();

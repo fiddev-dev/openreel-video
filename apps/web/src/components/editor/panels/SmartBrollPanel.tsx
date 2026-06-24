@@ -1,0 +1,512 @@
+import React, { useState, useCallback } from "react";
+import { Sparkles, Loader2, Play, Plus, Volume2, VolumeX } from "lucide-react";
+import { useProjectStore } from "../../../stores/project-store";
+import { useTimelineStore } from "../../../stores/timeline-store";
+import { toast } from "../../../stores/notification-store";
+
+interface SmartBrollPanelProps {
+  clipId: string;
+}
+
+interface BrollConcept {
+  query: string;
+  startTime: number;
+  endTime: number;
+  reason: string;
+  videos?: PexelsVideo[];
+}
+
+interface PexelsVideo {
+  id: number;
+  image: string;
+  link: string;
+}
+
+export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
+  const [concepts, setConcepts] = useState<BrollConcept[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [phase, setPhase] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [insertingId, setInsertingId] = useState<number | null>(null);
+
+  const [geminiApiKey, setGeminiApiKey] = useState(
+    () => localStorage.getItem("openreel:gemini_api_key") || ""
+  );
+  const [pexelsApiKey, setPexelsApiKey] = useState(
+    () => localStorage.getItem("openreel:pexels_api_key") || ""
+  );
+
+  const project = useProjectStore((s) => s.project);
+  const setPlayheadPosition = useTimelineStore((s) => s.setPlayheadPosition);
+
+  // Helper to get selected clip from timeline
+  const getSelectedClip = useCallback(() => {
+    if (!project) return null;
+    return project.timeline.tracks
+      .flatMap((t) => t.clips)
+      .find((c) => c.id === clipId);
+  }, [project, clipId]);
+
+  const clip = getSelectedClip();
+
+  // Find if B-Roll track exists and its muted state
+  const brollTrack = project?.timeline.tracks.find(
+    (t) => t.type === "video" && t.name === "B-Roll"
+  );
+
+  const handleMuteToggle = async () => {
+    if (!brollTrack || !project) return;
+    const store = useProjectStore.getState();
+    try {
+      await store.muteTrack(brollTrack.id, !brollTrack.muted);
+      toast.success(
+        brollTrack.muted ? "Track Unmuted" : "Track Muted",
+        `B-Roll track has been ${brollTrack.muted ? "unmuted" : "muted"}`
+      );
+    } catch (err) {
+      toast.error("Track Action Failed", "Could not toggle mute state of B-Roll track");
+    }
+  };
+
+  const handleScan = async () => {
+    if (!project || !clip) return;
+
+    if (!geminiApiKey.trim()) {
+      setError("Please enter your Gemini API Key first.");
+      return;
+    }
+    if (!pexelsApiKey.trim()) {
+      setError("Please enter your Pexels API Key first.");
+      return;
+    }
+
+    setIsScanning(true);
+    setError(null);
+    setConcepts([]);
+
+    try {
+      // 1. Get clip subtitles
+      setPhase("Retrieving subtitles...");
+      const clipSubtitles = (project.timeline.subtitles || [])
+        .filter(
+          (sub) =>
+            sub.startTime >= clip.startTime &&
+            sub.endTime <= clip.startTime + clip.duration
+        )
+        .sort((a, b) => a.startTime - b.startTime);
+
+      if (clipSubtitles.length === 0) {
+        throw new Error(
+          "No subtitles found for this clip. Please generate auto-captions first."
+        );
+      }
+
+      // 2. Format subtitles for Gemini
+      const formattedTranscript = clipSubtitles
+        .map((sub) => {
+          const startRel = sub.startTime - clip.startTime + clip.inPoint;
+          const endRel = sub.endTime - clip.startTime + clip.inPoint;
+          return `[${startRel.toFixed(1)}s - ${endRel.toFixed(1)}s]: "${sub.text}"`;
+        })
+        .join("\n");
+
+      // 3. Ask Gemini for visual B-Roll concepts
+      setPhase("Analyzing concepts with Gemini 3.1 Flash Lite...");
+
+      const prompt = `You are a professional video editor and B-Roll coordinator.
+Analyze the following video transcript segments (which are 0-indexed relative to the video file starting at 0.0 seconds).
+For each key topic or visual shift in the transcript, suggest a specific B-Roll stock footage concept.
+Each concept must have:
+1. A search query (1-3 words) to query a stock video engine (e.g. "aerial view forest", "man typing laptop", "coffee pouring"). Make it highly descriptive but simple.
+2. The start time (in seconds, matching the transcript timestamps) where this visual B-Roll segment should begin.
+3. The end time (in seconds, matching the transcript timestamps) where this visual B-Roll segment should end.
+4. A reason describing why this stock video is suitable for the voiceover.
+
+Transcript:
+${formattedTranscript}
+
+Respond ONLY with a valid JSON array matching this schema:
+[
+  {
+    "query": "search query",
+    "startTime": 0.0,
+    "endTime": 5.0,
+    "reason": "why this matches the transcript text"
+  }
+]
+
+Do not include any markdown tags, markdown blocks (like \`\`\`json), or additional text. Just output the raw JSON array.`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [{ text: prompt }],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: "application/json",
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+      }
+
+      const rawData = await response.json();
+      const textResponse = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textResponse) {
+        throw new Error("Empty response from Gemini API");
+      }
+
+      const cleanedText = textResponse
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+
+      const parsedConcepts: BrollConcept[] = JSON.parse(cleanedText);
+      if (!Array.isArray(parsedConcepts)) {
+        throw new Error("Gemini response is not a valid JSON array");
+      }
+
+      // 4. Query Pexels Video API for each concept
+      setPhase("Searching Pexels Stock Library...");
+      const finalConcepts: BrollConcept[] = [];
+
+      for (let i = 0; i < parsedConcepts.length; i++) {
+        const c = parsedConcepts[i];
+        setPhase(`Searching Pexels for "${c.query}" (${i + 1}/${parsedConcepts.length})...`);
+
+        try {
+          const pexResponse = await fetch(
+            `https://api.pexels.com/videos/search?query=${encodeURIComponent(
+              c.query
+            )}&per_page=3&orientation=landscape`,
+            {
+              headers: {
+                Authorization: pexelsApiKey,
+              },
+            }
+          );
+
+          if (pexResponse.ok) {
+            const pexData = await pexResponse.json();
+            const pexelsVideos = (pexData.videos || []).map((v: any) => {
+              const file =
+                v.video_files.find((f: any) => f.quality === "hd") ||
+                v.video_files[0];
+              return {
+                id: v.id,
+                image: v.image,
+                link: file?.link || "",
+              };
+            });
+            c.videos = pexelsVideos.filter((v: any) => v.link !== "");
+          } else {
+            c.videos = [];
+          }
+        } catch (e) {
+          console.warn(`Pexels search failed for query "${c.query}":`, e);
+          c.videos = [];
+        }
+        finalConcepts.push(c);
+      }
+
+      setConcepts(finalConcepts);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "B-Roll Scan failed");
+    } finally {
+      setIsScanning(false);
+      setPhase("");
+    }
+  };
+
+  const handleInsertOverlay = async (concept: BrollConcept, video: PexelsVideo) => {
+    if (!project || !clip) return;
+    setInsertingId(video.id);
+
+    try {
+      // 1. Fetch stock video URL as a blob
+      const res = await fetch(video.link);
+      if (!res.ok) throw new Error("Failed to download video file from Pexels");
+      const blob = await res.blob();
+      const file = new File([blob], `broll-${video.id}.mp4`, {
+        type: "video/mp4",
+      });
+
+      // 2. Import into project media library
+      const store = useProjectStore.getState();
+      const importRes = await store.importMedia(file);
+      if (!importRes.success || !importRes.actionId) {
+        throw new Error(importRes.error?.message || "Failed to import video into project");
+      }
+      const newMediaId = importRes.actionId;
+
+      // 3. Create "B-Roll" track if it doesn't exist
+      let targetTrack = project.timeline.tracks.find(
+        (t) => t.type === "video" && t.name === "B-Roll"
+      );
+
+      if (!targetTrack) {
+        const oldTracks = [...project.timeline.tracks];
+        const addTrackRes = await store.addTrack("video");
+        if (!addTrackRes.success) {
+          throw new Error("Failed to create B-Roll overlay track");
+        }
+        const updatedProject = useProjectStore.getState().project;
+        const newTrack = updatedProject.timeline.tracks.find(
+          (t) => !oldTracks.some((ot) => ot.id === t.id)
+        );
+        if (!newTrack) {
+          throw new Error("Failed to register new video track");
+        }
+        store.renameTrack(newTrack.id, "B-Roll");
+        targetTrack = { ...newTrack, name: "B-Roll" };
+      }
+
+      // 4. Calculate start time on the timeline (relative to global timeline)
+      // timelineStartTime = clip.startTime + (concept.startTime - clip.inPoint)
+      const timelineStartTime = clip.startTime + (concept.startTime - clip.inPoint);
+
+      // 5. Add clip to the track
+      const addClipRes = await store.addClip(targetTrack.id, newMediaId, timelineStartTime);
+      if (!addClipRes.success) {
+        throw new Error(addClipRes.error?.message || "Failed to add B-roll clip onto track");
+      }
+
+      // 6. Retrieve the new clip to trim it and mute its volume
+      const finalProject = useProjectStore.getState().project;
+      const trackAfterAdd = finalProject.timeline.tracks.find(
+        (t) => t.id === targetTrack!.id
+      );
+      const newClip = trackAfterAdd?.clips.find(
+        (c) => c.mediaId === newMediaId && Math.abs(c.startTime - timelineStartTime) < 0.01
+      );
+
+      if (!newClip) {
+        throw new Error("Failed to locate B-roll clip on timeline");
+      }
+
+      // Trim the B-roll overlay clip duration to match the concept's duration
+      const conceptDuration = concept.endTime - concept.startTime;
+      const trimRes = await store.trimClip(newClip.id, 0, conceptDuration);
+      if (!trimRes.success) {
+        throw new Error(trimRes.error?.message || "Failed to trim overlay clip");
+      }
+
+      // Mute the B-roll audio by executing audio/setVolume with volume: 0
+      const muteAction = {
+        type: "audio/setVolume" as const,
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+        params: { clipId: newClip.id, volume: 0 },
+      };
+      const muteRes = await store.actionExecutor.execute(muteAction, finalProject);
+      if (muteRes.success) {
+        useProjectStore.setState({
+          project: {
+            ...useProjectStore.getState().project,
+            modifiedAt: Date.now(),
+          },
+        });
+      }
+
+      toast.success(
+        "B-Roll Inserted",
+        `Stock video overlays segment at ${formatTime(concept.startTime)} - ${formatTime(
+          concept.endTime
+        )}`
+      );
+    } catch (err) {
+      toast.error(
+        "Insertion Failed",
+        err instanceof Error ? err.message : "Failed to insert stock B-roll overlay"
+      );
+    } finally {
+      setInsertingId(null);
+    }
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  if (!clip) {
+    return (
+      <div className="text-[10px] text-text-muted text-center py-4">
+        No active clip selected. Please select a clip.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* API Keys Configuration */}
+      <div className="space-y-2 border-b border-border pb-3">
+        <div className="space-y-1">
+          <label className="text-[10px] text-text-secondary block">Gemini API Key</label>
+          <input
+            type="password"
+            placeholder="Enter Gemini API Key..."
+            value={geminiApiKey}
+            onChange={(e) => {
+              const val = e.target.value;
+              setGeminiApiKey(val);
+              localStorage.setItem("openreel:gemini_api_key", val);
+            }}
+            className="w-full px-2 py-1 text-[10px] bg-background-secondary border border-border rounded text-text-primary placeholder:text-text-muted"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-text-secondary block">Pexels API Key</label>
+          <input
+            type="password"
+            placeholder="Enter Pexels API Key..."
+            value={pexelsApiKey}
+            onChange={(e) => {
+              const val = e.target.value;
+              setPexelsApiKey(val);
+              localStorage.setItem("openreel:pexels_api_key", val);
+            }}
+            className="w-full px-2 py-1 text-[10px] bg-background-secondary border border-border rounded text-text-primary placeholder:text-text-muted"
+          />
+        </div>
+      </div>
+
+      {/* Control Buttons */}
+      <div className="space-y-2">
+        <button
+          onClick={handleScan}
+          disabled={isScanning}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-primary hover:bg-primary/90 text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50"
+        >
+          {isScanning ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              {phase}
+            </>
+          ) : (
+            <>
+              <Sparkles size={14} />
+              Scan for B-Roll Concepts
+            </>
+          )}
+        </button>
+
+        {error && (
+          <p className="text-[10px] text-red-400 bg-red-500/10 p-2 rounded">{error}</p>
+        )}
+      </div>
+
+      {/* Concept results with video selections */}
+      {concepts.length > 0 && (
+        <div className="space-y-3 pt-2">
+          <h4 className="text-[11px] font-bold text-text-primary uppercase tracking-wider">
+            Suggested Overlays
+          </h4>
+
+          {concepts.map((concept, index) => (
+            <div
+              key={index}
+              className="p-3 bg-background-tertiary border border-border rounded-xl space-y-2.5"
+            >
+              <div className="flex items-start justify-between">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold text-primary block">
+                    Concept {index + 1}: "{concept.query}"
+                  </span>
+                  <span className="text-[9px] text-text-muted font-mono block">
+                    Range: {formatTime(concept.startTime)} - {formatTime(concept.endTime)}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setPlayheadPosition(clip.startTime + (concept.startTime - clip.inPoint))}
+                  className="p-1 hover:bg-background-secondary rounded text-text-muted hover:text-text-primary"
+                  title="Go to timing"
+                >
+                  <Play size={10} />
+                </button>
+              </div>
+
+              <p className="text-[9px] text-text-secondary leading-relaxed bg-background-secondary/50 p-2 rounded-lg border border-border/30">
+                {concept.reason}
+              </p>
+
+              {/* Video Grid */}
+              <div className="space-y-1">
+                <span className="text-[8px] text-text-muted font-semibold uppercase tracking-wider block">
+                  Pexels Videos (Orientation: Landscape)
+                </span>
+                {concept.videos && concept.videos.length > 0 ? (
+                  <div className="grid grid-cols-3 gap-1.5 pt-1">
+                    {concept.videos.map((vid) => (
+                      <div
+                        key={vid.id}
+                        className="group relative aspect-video bg-black/40 rounded-lg overflow-hidden border border-border/50 hover:border-primary/50 transition-all cursor-pointer"
+                        onClick={() => handleInsertOverlay(concept, vid)}
+                      >
+                        <img
+                          src={vid.image}
+                          alt={concept.query}
+                          className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                          {insertingId === vid.id ? (
+                            <Loader2 size={12} className="animate-spin text-white" />
+                          ) : (
+                            <div className="p-1 bg-primary text-white rounded-full">
+                              <Plus size={10} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-[9px] text-text-muted italic block py-1">
+                    No videos found or search failed.
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Helper Track mute controller */}
+      {brollTrack && (
+        <div className="border border-border/40 bg-background-secondary/40 p-3 rounded-xl flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {brollTrack.muted ? (
+              <VolumeX size={14} className="text-red-400" />
+            ) : (
+              <Volume2 size={14} className="text-green-400" />
+            )}
+            <span className="text-[10px] font-bold text-text-primary">
+              B-Roll Track: {brollTrack.muted ? "Muted" : "Active"}
+            </span>
+          </div>
+          <button
+            onClick={handleMuteToggle}
+            className="px-2 py-1 text-[9px] bg-background-tertiary hover:bg-background-tertiary/80 border border-border rounded-lg text-text-secondary transition-colors"
+          >
+            {brollTrack.muted ? "Unmute Track" : "Mute Track"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SmartBrollPanel;

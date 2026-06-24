@@ -256,6 +256,129 @@ function renderTypewriter(
   return { segments, visible: true };
 }
 
+function renderPopIn(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const animationDuration = 0.25;
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isVisible = currentTime >= word.startTime;
+
+    if (!isVisible) {
+      return {
+        text: word.text,
+        style: "hidden",
+        opacity: 0,
+        scale: 0,
+        offsetY: 0,
+      };
+    }
+
+    const animProgress = clamp(timeSinceStart / animationDuration, 0, 1);
+    // Pop-in bounce: 0 -> 1.35 -> 1.0
+    const scale = animProgress < 0.7
+      ? (animProgress / 0.7) * 1.35
+      : 1.35 - ((animProgress - 0.7) / 0.3) * 0.35;
+
+    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
+
+    return {
+      text: word.text,
+      style: isActive ? "active" : "normal",
+      opacity: clamp(timeSinceStart / 0.08, 0, 1),
+      scale: scale,
+      offsetY: 0,
+      color: isActive ? (subtitle.style?.highlightColor || "#ffff00") : undefined,
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSlideUp(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const animationDuration = 0.25;
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isVisible = currentTime >= word.startTime;
+
+    if (!isVisible) {
+      return {
+        text: word.text,
+        style: "hidden",
+        opacity: 0,
+        scale: 1,
+        offsetY: 15,
+      };
+    }
+
+    const animProgress = clamp(timeSinceStart / animationDuration, 0, 1);
+    // Cubic ease out slide-up
+    const easeProgress = 1 - Math.pow(1 - animProgress, 3);
+    const offsetY = 15 * (1 - easeProgress);
+
+    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
+
+    return {
+      text: word.text,
+      style: isActive ? "active" : "normal",
+      opacity: easeProgress,
+      scale: 1,
+      offsetY: offsetY,
+      color: isActive ? (subtitle.style?.highlightColor || "#ffff00") : undefined,
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderGlowPulse(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
+    let scale = 1;
+    let offsetY = 0;
+
+    if (isActive) {
+      const wordDuration = word.endTime - word.startTime;
+      const elapsed = currentTime - word.startTime;
+      const pulse = Math.sin(clamp(elapsed / wordDuration, 0, 1) * Math.PI);
+      scale = 1 + pulse * 0.15;
+      offsetY = -pulse * 3;
+    }
+
+    return {
+      text: word.text,
+      style: isActive ? "active" : "normal",
+      opacity: 1,
+      scale: scale,
+      offsetY: offsetY,
+      color: isActive ? (subtitle.style?.highlightColor || "#ffff00") : undefined,
+    };
+  });
+
+  return { segments, visible: true };
+}
+
 export function renderAnimatedCaption(
   subtitle: Subtitle,
   currentTime: number,
@@ -277,6 +400,12 @@ export function renderAnimatedCaption(
       return renderBounce(subtitle, currentTime);
     case "typewriter":
       return renderTypewriter(subtitle, currentTime);
+    case "pop-in":
+      return renderPopIn(subtitle, currentTime);
+    case "slide-up":
+      return renderSlideUp(subtitle, currentTime);
+    case "glow-pulse":
+      return renderGlowPulse(subtitle, currentTime);
     case "none":
     default:
       return renderNone(subtitle);
@@ -293,6 +422,9 @@ export function getAnimationStyleDisplayName(
     karaoke: "Karaoke",
     bounce: "Bounce",
     typewriter: "Typewriter",
+    "pop-in": "Pop In (Zoom)",
+    "slide-up": "Slide Up",
+    "glow-pulse": "Glow Pulse",
   };
   return names[style];
 }
@@ -304,4 +436,7 @@ export const CAPTION_ANIMATION_STYLES: CaptionAnimationStyle[] = [
   "karaoke",
   "bounce",
   "typewriter",
+  "pop-in",
+  "slide-up",
+  "glow-pulse",
 ];

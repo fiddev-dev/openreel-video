@@ -202,7 +202,10 @@ export type CaptionAnimationStyle =
   | "word-by-word"
   | "karaoke"
   | "bounce"
-  | "typewriter";
+  | "typewriter"
+  | "pop-in"
+  | "slide-up"
+  | "glow-pulse";
 
 export interface SubtitleWord {
   readonly text: string;

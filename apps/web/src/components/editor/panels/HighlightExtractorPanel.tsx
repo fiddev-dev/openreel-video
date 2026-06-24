@@ -1,7 +1,8 @@
 import React, { useState, useCallback } from "react";
-import { Sparkles, Play, Check, Loader2 } from "lucide-react";
+import { Sparkles, Play, Check, Loader2, Plus } from "lucide-react";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
+import { toast } from "../../../stores/notification-store";
 import {
   getTranscriptionService,
   initializeTranscriptionService,
@@ -10,6 +11,7 @@ import {
 import { OPENREEL_TRANSCRIBE_URL } from "../../../config/api-endpoints";
 import {
   extractHighlights,
+  extractHighlightsWithGemini,
   type HighlightResult,
   type HighlightPreferences,
 } from "../../../services/highlight-service";
@@ -27,6 +29,7 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
   const [progress, setProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("openreel:gemini_api_key") || "");
 
   const project = useProjectStore((s) => s.project);
   const getMediaItem = useProjectStore((s) => s.getMediaItem);
@@ -58,44 +61,80 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
     setHighlights([]);
 
     try {
-      setPhase("Transcribing audio...");
-      setProgress(5);
+      let transcript: TranscriptWord[] = [];
 
-      const transcriptionService = getTranscriptionService() || initializeTranscriptionService({
-        apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
-      });
-      const subtitles = await transcriptionService.transcribeClip(
-        clip,
-        mediaItem,
-        (p) => setProgress(Math.round(p.progress * 20)),
+      // Check if there are already subtitles on the timeline that fall within this clip's range
+      const clipSubtitles = (project.timeline.subtitles || []).filter(
+        (sub) => sub.startTime >= clip.startTime && sub.endTime <= clip.startTime + clip.duration
       );
 
-      const transcript: TranscriptWord[] = subtitles.flatMap((sub) =>
-        sub.words
-          ? sub.words.map((w) => ({ text: w.text, start: w.startTime, end: w.endTime }))
-          : [{ text: sub.text, start: sub.startTime, end: sub.endTime }],
-      );
+      if (clipSubtitles.length > 0) {
+        setPhase("Using existing subtitles...");
+        setProgress(10);
+        transcript = clipSubtitles.flatMap((sub) => {
+          const startRel = sub.startTime - clip.startTime + clip.inPoint;
+          const endRel = sub.endTime - clip.startTime + clip.inPoint;
+          return sub.words && sub.words.length > 0
+            ? sub.words.map((w) => ({
+                text: w.text,
+                start: w.startTime - clip.startTime + clip.inPoint,
+                end: w.endTime - clip.startTime + clip.inPoint,
+              }))
+            : [{ text: sub.text, start: startRel, end: endRel }];
+        });
+      } else {
+        setPhase("Transcribing audio...");
+        setProgress(5);
 
-      if (transcript.length === 0) {
-        throw new Error("No transcript words found");
+        const transcriptionService = getTranscriptionService() || initializeTranscriptionService({
+          apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
+        });
+        const subtitles = await transcriptionService.transcribeClip(
+          clip,
+          mediaItem,
+          (p) => setProgress(Math.round(p.progress * 20)),
+        );
+
+        transcript = subtitles.flatMap((sub) =>
+          sub.words
+            ? sub.words.map((w) => ({ text: w.text, start: w.startTime, end: w.endTime }))
+            : [{ text: sub.text, start: sub.startTime, end: sub.endTime }],
+        );
       }
 
-      setPhase("Decoding audio...");
-      setProgress(25);
+      if (transcript.length === 0) {
+        throw new Error("No transcript words found. Please generate auto-captions first or ensure the video has audio.");
+      }
 
-      const arrayBuffer = await mediaItem.blob.arrayBuffer();
-      const audioContext = new OfflineAudioContext(1, 44100, 44100);
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      let results: HighlightResult[];
+      if (geminiApiKey.trim()) {
+        results = await extractHighlightsWithGemini(
+          transcript,
+          geminiApiKey,
+          preferences,
+          (phaseName, prog) => {
+            setPhase(phaseName);
+            setProgress(25 + Math.round(prog * 0.75));
+          }
+        );
+      } else {
+        setPhase("Decoding audio...");
+        setProgress(25);
 
-      const results = await extractHighlights(
-        audioBuffer,
-        transcript,
-        preferences,
-        (phaseName, prog) => {
-          setPhase(phaseName);
-          setProgress(25 + Math.round(prog * 0.75));
-        },
-      );
+        const arrayBuffer = await mediaItem.blob.arrayBuffer();
+        const audioContext = new OfflineAudioContext(1, 44100, 44100);
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        results = await extractHighlights(
+          audioBuffer,
+          transcript,
+          preferences,
+          (phaseName, prog) => {
+            setPhase(phaseName);
+            setProgress(25 + Math.round(prog * 0.75));
+          },
+        );
+      }
 
       setHighlights(results);
       setSelected(new Set(results.map((_, i) => i)));
@@ -106,7 +145,87 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
       setPhase("");
       setProgress(0);
     }
-  }, [clipId, project, getMediaItem, preferences]);
+  }, [clipId, project, getMediaItem, preferences, geminiApiKey]);
+
+  const handleAppendHighlight = useCallback(
+    async (highlight: HighlightResult) => {
+      if (!project) return;
+
+      const store = useProjectStore.getState();
+      const originalTrack = project.timeline.tracks.find((t) =>
+        t.clips.some((c) => c.id === clipId),
+      );
+      if (!originalTrack) {
+        setError("Original track not found");
+        return;
+      }
+
+      const originalClip = originalTrack.clips.find((c) => c.id === clipId);
+      if (!originalClip) {
+        setError("Original clip not found");
+        return;
+      }
+
+      try {
+        // 1. Find the maximum end time across all tracks to append at the end
+        let insertTime = 0;
+        for (const track of project.timeline.tracks) {
+          for (const c of track.clips) {
+            if (c.startTime + c.duration > insertTime) {
+              insertTime = c.startTime + c.duration;
+            }
+          }
+        }
+
+        // 2. Add the clip at the end of the original track
+        const addResult = await store.addClip(originalTrack.id, originalClip.mediaId, insertTime);
+        if (!addResult.success) {
+          throw new Error(addResult.error?.message || "Failed to add clip to timeline");
+        }
+
+        // 3. Find the newly added clip
+        const projectAfter = useProjectStore.getState().project;
+        const updatedTrack = projectAfter.timeline.tracks.find((t) => t.id === originalTrack.id);
+        const newClip = updatedTrack?.clips.find(
+          (c) => c.mediaId === originalClip.mediaId && Math.abs(c.startTime - insertTime) < 0.01
+        );
+
+        if (!newClip) {
+          throw new Error("Failed to locate the appended clip on the timeline");
+        }
+
+        // 4. Trim the new clip to match the highlight's duration
+        const trimResult = await store.trimClip(newClip.id, highlight.start, highlight.end);
+        if (!trimResult.success) {
+          throw new Error(trimResult.error?.message || "Failed to trim appended clip");
+        }
+
+        // 5. Copy and align subtitles that overlap with the highlight segment
+        const originalSubtitles = project.timeline.subtitles || [];
+        for (const sub of originalSubtitles) {
+          const relativeToSource = sub.startTime - originalClip.startTime + originalClip.inPoint;
+          if (relativeToSource >= highlight.start && relativeToSource <= highlight.end) {
+            const offset = relativeToSource - highlight.start;
+            const newSubStart = insertTime + offset;
+            const newSubEnd = newSubStart + (sub.endTime - sub.startTime);
+
+            // Add the aligned subtitle
+            await store.addSubtitle({
+              ...sub,
+              id: crypto.randomUUID(),
+              startTime: newSubStart,
+              endTime: newSubEnd,
+            });
+          }
+        }
+
+        toast.success("Clip Added", `Highlight clip "${highlight.title}" appended to timeline successfully`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to append highlight to timeline");
+      }
+    },
+    [clipId, project]
+  );
 
   const handlePreview = useCallback(
     (highlight: HighlightResult) => {
@@ -136,6 +255,21 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
   return (
     <div className="space-y-3">
       <div className="space-y-2">
+        <div className="space-y-1">
+          <label className="text-[10px] text-text-secondary block">Gemini API Key</label>
+          <input
+            type="password"
+            placeholder="Enter Gemini API Key..."
+            value={geminiApiKey}
+            onChange={(e) => {
+              const val = e.target.value;
+              setGeminiApiKey(val);
+              localStorage.setItem("openreel:gemini_api_key", val);
+            }}
+            className="w-full px-2 py-1 text-[10px] bg-background-secondary border border-border rounded text-text-primary placeholder:text-text-muted"
+          />
+        </div>
+
         <div className="flex items-center gap-2">
           <label className="text-[10px] text-text-secondary">Clips</label>
           <input
@@ -187,58 +321,72 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
 
       {highlights.length > 0 && (
         <div className="space-y-1.5">
-          {highlights.map((highlight, index) => (
-            <div
-              key={index}
-              className={`p-2 rounded border transition-colors cursor-pointer ${
-                selected.has(index)
-                  ? "bg-primary/10 border-primary/30"
-                  : "bg-background-tertiary border-transparent hover:border-border"
-              }`}
-              onClick={() => toggleSelect(index)}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <div
-                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white ${
-                      highlight.score >= 8
-                        ? "bg-green-500"
-                        : highlight.score >= 5
-                          ? "bg-yellow-500"
-                          : "bg-gray-500"
-                    }`}
-                  >
-                    {highlight.score}
+          {highlights.map((highlight, index) => {
+            const normalizedScore = highlight.score > 10 ? highlight.score / 10 : highlight.score;
+            return (
+              <div
+                key={index}
+                className={`p-2 rounded border transition-colors cursor-pointer ${
+                  selected.has(index)
+                    ? "bg-primary/10 border-primary/30"
+                    : "bg-background-tertiary border-transparent hover:border-border"
+                }`}
+                onClick={() => toggleSelect(index)}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white ${
+                        normalizedScore >= 8
+                          ? "bg-green-500"
+                          : normalizedScore >= 5
+                            ? "bg-yellow-500"
+                            : "bg-gray-500"
+                      }`}
+                    >
+                      {Math.round(highlight.score)}
+                    </div>
+                    <span className="text-[10px] text-text-primary font-medium truncate max-w-[120px]">
+                      {highlight.title}
+                    </span>
                   </div>
-                  <span className="text-[10px] text-text-primary font-medium truncate max-w-[140px]">
-                    {highlight.title}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await handleAppendHighlight(highlight);
+                      }}
+                      className="p-1 hover:bg-background-secondary rounded text-green-400 hover:text-green-300"
+                      title="Add segment to timeline"
+                    >
+                      <Plus size={10} />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePreview(highlight);
+                      }}
+                      className="p-1 hover:bg-background-secondary rounded"
+                      title="Preview segment"
+                    >
+                      <Play size={10} className="text-text-muted" />
+                    </button>
+                    {selected.has(index) && (
+                      <Check size={12} className="text-primary" />
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] text-text-muted">
+                    {formatTime(highlight.start)} - {formatTime(highlight.end)}
+                  </span>
+                  <span className="text-[9px] text-text-muted italic truncate max-w-[120px]">
+                    {highlight.reason}
                   </span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePreview(highlight);
-                    }}
-                    className="p-1 hover:bg-background-secondary rounded"
-                  >
-                    <Play size={10} className="text-text-muted" />
-                  </button>
-                  {selected.has(index) && (
-                    <Check size={12} className="text-primary" />
-                  )}
-                </div>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">
-                  {formatTime(highlight.start)} - {formatTime(highlight.end)}
-                </span>
-                <span className="text-[9px] text-text-muted italic truncate max-w-[120px]">
-                  {highlight.reason}
-                </span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
 
           <button
             onClick={async () => {

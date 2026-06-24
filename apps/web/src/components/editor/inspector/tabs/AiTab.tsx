@@ -18,6 +18,7 @@ import {
 import { AutoReframeSection } from "../";
 import { AutoEditPanel } from "../../panels/AutoEditPanel";
 import { HighlightExtractorPanel } from "../../panels/HighlightExtractorPanel";
+import { SmartBrollPanel } from "../../panels/SmartBrollPanel";
 import { InspectorSection } from "../shell/InspectorSection";
 
 export interface AiTabProps {
@@ -221,6 +222,16 @@ export const AiTab: React.FC<AiTabProps> = ({
           defaultOpen={false}
         >
           <HighlightExtractorPanel clipId={clipId} />
+        </InspectorSection>
+      )}
+
+      {clipType === "video" && (
+        <InspectorSection
+          title="AI Smart B-Roll"
+          sectionId="ai-smart-broll"
+          defaultOpen={false}
+        >
+          <SmartBrollPanel clipId={clipId} />
         </InspectorSection>
       )}
 

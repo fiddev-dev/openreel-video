@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import {
   Smartphone,
   Monitor,
@@ -9,8 +9,6 @@ import {
 } from "lucide-react";
 import { Slider } from "@openreel/ui";
 import {
-  getAutoReframeEngine,
-  initializeAutoReframeEngine,
   type ReframeSettings,
   type AspectRatioPreset,
   type PlatformPreset,
@@ -21,6 +19,7 @@ import {
 } from "@openreel/core";
 import { toast } from "../../../stores/notification-store";
 import { useProjectStore } from "../../../stores/project-store";
+import { getAutoReframeBridge } from "../../../bridges/auto-reframe-bridge";
 
 interface AutoReframeSectionProps {
   clipId: string;
@@ -51,35 +50,11 @@ export const AutoReframeSection: React.FC<AutoReframeSectionProps> = ({
   );
   const [isInitializing, setIsInitializing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(false);
   const [isApplied, setIsApplied] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState("");
   const [selectedPlatform, setSelectedPlatform] =
     useState<PlatformPreset | null>("tiktok");
-
-  useEffect(() => {
-    const engine = getAutoReframeEngine();
-    if (engine) {
-      setIsInitialized(engine.isInitialized());
-    }
-  }, [clipId]);
-
-  const handleInitialize = useCallback(async () => {
-    setIsInitializing(true);
-    try {
-      const engine = initializeAutoReframeEngine();
-      await engine.initialize((prog, msg) => {
-        setProgress(prog);
-        setProgressMessage(msg);
-      });
-      setIsInitialized(true);
-    } catch (error) {
-      console.error("Failed to initialize auto-reframe:", error);
-    } finally {
-      setIsInitializing(false);
-    }
-  }, []);
 
   const updateLocalSettings = useCallback(
     (updates: Partial<ReframeSettings>) => {
@@ -114,58 +89,41 @@ export const AutoReframeSection: React.FC<AutoReframeSectionProps> = ({
 
   const handleAnalyze = useCallback(async () => {
     setIsProcessing(true);
+    setIsInitializing(true);
     setProgress(0);
     setProgressMessage("Initializing...");
 
     try {
-      if (!isInitialized) {
-        setProgressMessage("Loading AI engine...");
-        setProgress(10);
-        await handleInitialize();
+      const bridge = getAutoReframeBridge();
+      const result = await bridge.runAutoReframe(
+        clipId,
+        reframeSettings,
+        (prog, msg) => {
+          setProgress(prog);
+          setProgressMessage(msg);
+          if (prog >= 20) {
+            setIsInitializing(false);
+          }
+        }
+      );
+
+      if (!result.success) {
+        throw new Error(result.message || "Failed to analyze clip");
       }
 
-      const engine = getAutoReframeEngine();
-      if (!engine) {
-        throw new Error("Engine not available");
-      }
-
-      setProgressMessage("Configuring reframe settings...");
-      setProgress(30);
-
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      setProgressMessage("Applying smart crop configuration...");
-      setProgress(60);
-
-      const targetConfig =
-        ASPECT_RATIO_PRESETS[reframeSettings.targetAspectRatio];
-
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
+      const targetConfig = ASPECT_RATIO_PRESETS[reframeSettings.targetAspectRatio];
+      
       setProgressMessage("Updating project settings...");
-      setProgress(80);
+      setProgress(95);
 
       await updateProjectDimensions({
-        width: targetConfig.width,
-        height: targetConfig.height,
+        width: result.outputWidth || targetConfig.width,
+        height: result.outputHeight || targetConfig.height,
       });
-
-      setProgressMessage("Finalizing...");
-      setProgress(90);
-
-      await new Promise((resolve) => setTimeout(resolve, 200));
 
       setProgress(100);
       setProgressMessage("Complete!");
       setIsApplied(true);
-
-      const result: ReframeResult = {
-        keyframes: [],
-        outputWidth: targetConfig.width,
-        outputHeight: targetConfig.height,
-        success: true,
-        message: `Configured for ${targetConfig.name} (${targetConfig.width}x${targetConfig.height})`,
-      };
 
       onReframeComplete?.(result);
 
@@ -174,21 +132,21 @@ export const AutoReframeSection: React.FC<AutoReframeSectionProps> = ({
         : reframeSettings.targetAspectRatio;
       toast.success(
         "Auto Reframe Applied",
-        `Project resized to ${platformName} (${targetConfig.width}x${targetConfig.height})`,
+        `Project resized to ${platformName} and face-tracking keyframes applied.`
       );
     } catch (error) {
       console.error("Auto-reframe failed:", error);
       toast.error(
         "Auto Reframe Failed",
-        error instanceof Error ? error.message : "Unknown error",
+        error instanceof Error ? error.message : "Unknown error"
       );
       setIsApplied(false);
     } finally {
       setIsProcessing(false);
+      setIsInitializing(false);
     }
   }, [
-    isInitialized,
-    handleInitialize,
+    clipId,
     reframeSettings,
     selectedPlatform,
     onReframeComplete,

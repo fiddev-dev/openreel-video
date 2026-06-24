@@ -12,6 +12,7 @@ import {
   type CaptionAnimationStyle,
   CAPTION_ANIMATION_STYLES,
   getAnimationStyleDisplayName,
+  WordHighlightRenderer,
 } from "@openreel/core";
 import { OPENREEL_TRANSCRIBE_URL } from "../../config/api-endpoints";
 import { mergeEditingTemplateControlValues } from "./panels/EditingTemplateControls";
@@ -72,6 +73,86 @@ const EmptyState: React.FC = () => (
   </div>
 );
 
+const AnimationPreview: React.FC<{ animationStyle: CaptionAnimationStyle; style: any }> = ({
+  animationStyle,
+  style,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animationFrameId: number;
+    let startTime = Date.now();
+
+    const mockSubtitle = {
+      id: "preview-sub",
+      text: "OpenReel Subtitles Preview",
+      startTime: 0,
+      endTime: 3.0,
+      animationStyle,
+      style: {
+        fontSize: 16,
+        fontFamily: style?.fontFamily || "Montserrat",
+        color: style?.color || "#ffffff",
+        backgroundColor: style?.backgroundColor || "rgba(0, 0, 0, 0.5)",
+        highlightColor: style?.highlightColor || "#ffff00",
+        upcomingColor: style?.upcomingColor || "rgba(255, 255, 255, 0.4)",
+        position: "center" as "top" | "center" | "bottom",
+      },
+      words: [
+        { text: "OpenReel", startTime: 0.2, endTime: 0.8 },
+        { text: "Subtitles", startTime: 0.9, endTime: 1.6 },
+        { text: "Preview", startTime: 1.7, endTime: 2.5 },
+      ],
+    };
+
+    const render = () => {
+      const elapsed = ((Date.now() - startTime) % 3200) / 1000;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw background
+      ctx.fillStyle = "#16161a";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      WordHighlightRenderer.render(
+        ctx,
+        mockSubtitle,
+        elapsed,
+        canvas.width,
+        canvas.height
+      );
+
+      animationFrameId = requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [animationStyle, style]);
+
+  return (
+    <div className="relative rounded-lg overflow-hidden border border-border bg-[#16161a] mt-2 shadow-inner">
+      <canvas
+        ref={canvasRef}
+        width={260}
+        height={60}
+        className="w-full h-[60px] block"
+      />
+      <div className="absolute top-1 left-2 text-[8px] text-text-muted font-mono uppercase bg-background-secondary/90 px-1 py-0.5 rounded border border-border/40">
+        Animation Preview
+      </div>
+    </div>
+  );
+};
+
 export const InspectorPanel: React.FC = () => {
   // Stores
   const {
@@ -84,6 +165,7 @@ export const InspectorPanel: React.FC = () => {
     getEditingTemplate,
     updateEditingTemplateApplication,
     removeEditingTemplateApplication,
+    applySubtitleStyleToAll,
   } = useProjectStore();
   const project = useProjectStore((state) => state.project);
   const { getSelectedClipIds } = useUIStore();
@@ -1070,10 +1152,20 @@ export const InspectorPanel: React.FC = () => {
                     "Words bounce in as they appear"}
                   {selectedSubtitle.animationStyle === "typewriter" &&
                     "Words appear progressively like typing"}
+                  {selectedSubtitle.animationStyle === "pop-in" &&
+                    "Words pop and zoom in when spoken"}
+                  {selectedSubtitle.animationStyle === "slide-up" &&
+                    "Words slide up from below when spoken"}
+                  {selectedSubtitle.animationStyle === "glow-pulse" &&
+                    "Words pulse and glow when spoken"}
                   {(!selectedSubtitle.animationStyle ||
                     selectedSubtitle.animationStyle === "none") &&
                     "Static text, no animation"}
                 </p>
+                <AnimationPreview
+                  animationStyle={selectedSubtitle.animationStyle || "none"}
+                  style={selectedSubtitle.style}
+                />
                 {selectedSubtitle.animationStyle &&
                   selectedSubtitle.animationStyle !== "none" &&
                   !selectedSubtitle.words?.length && (
@@ -1136,6 +1228,65 @@ export const InspectorPanel: React.FC = () => {
                             className={`w-6 h-6 rounded border-2 transition-transform hover:scale-110 ${
                               (selectedSubtitle.style?.highlightColor ||
                                 "#ffff00") === color
+                                ? "border-white"
+                                : "border-transparent"
+                            }`}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-border">
+                        <span className="text-[10px] text-text-secondary">
+                          Upcoming Color
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={
+                              selectedSubtitle.style?.upcomingColor &&
+                              selectedSubtitle.style.upcomingColor.startsWith("#")
+                                ? selectedSubtitle.style.upcomingColor
+                                : "#888888"
+                            }
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  upcomingColor: e.target.value,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-6 h-6 rounded border border-border cursor-pointer"
+                          />
+                          <span className="text-[9px] font-mono text-text-muted uppercase">
+                            {selectedSubtitle.style?.upcomingColor ||
+                              "rgba(255, 255, 255, 0.5)"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-6 gap-1">
+                        {[
+                          "rgba(255, 255, 255, 0.5)",
+                          "#888888",
+                          "#aaaaaa",
+                          "#bbbbbb",
+                          "#555555",
+                          "transparent",
+                        ].map((color) => (
+                          <button
+                            key={color}
+                            onClick={() =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  upcomingColor: color,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className={`w-6 h-6 rounded border-2 transition-transform hover:scale-110 ${
+                              (selectedSubtitle.style?.upcomingColor ||
+                                "rgba(255, 255, 255, 0.5)") === color
                                 ? "border-white"
                                 : "border-transparent"
                             }`}
@@ -1326,8 +1477,21 @@ export const InspectorPanel: React.FC = () => {
               </div>
             </Section>
 
-            {/* Delete Subtitle */}
+            {/* Apply to All Subtitles */}
             <div className="pt-4 border-t border-border">
+              <button
+                onClick={() => {
+                  applySubtitleStyleToAll(selectedSubtitle.id);
+                  toast.success("Applied to all subtitles", "Styles, fonts, positions, and animations synchronized.");
+                }}
+                className="w-full py-2 bg-primary hover:bg-primary/80 text-black rounded-lg text-[10px] font-semibold transition-all flex items-center justify-center gap-1.5"
+              >
+                Apply to All Subtitles
+              </button>
+            </div>
+
+            {/* Delete Subtitle */}
+            <div className="pt-2">
               <button
                 onClick={() => {
                   const { removeSubtitle } = useProjectStore.getState();

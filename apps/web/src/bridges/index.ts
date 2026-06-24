@@ -164,3 +164,10 @@ export {
   type SilenceAnalysisResult,
   type SilenceProgressCallback,
 } from "./silence-cut-bridge";
+
+export {
+  AutoReframeBridge,
+  getAutoReframeBridge,
+  type ReframeProgressCallback,
+} from "./auto-reframe-bridge";
+

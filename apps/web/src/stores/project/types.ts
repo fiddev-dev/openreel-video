@@ -253,6 +253,7 @@ export interface ProjectState {
   exportSRT: () => string;
   applySubtitleStylePreset: (presetName: string) => boolean;
   getSubtitleStylePresets: () => string[];
+  applySubtitleStyleToAll: (subtitleId: string) => void;
 
   createShapeClip: (
     trackId: string,

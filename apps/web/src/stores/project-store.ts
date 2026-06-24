@@ -311,6 +311,7 @@ export interface ProjectState {
   exportSRT: () => Promise<string>;
   applySubtitleStylePreset: (presetName: string) => Promise<boolean>;
   getSubtitleStylePresets: () => Promise<string[]>;
+  applySubtitleStyleToAll: (subtitleId: string) => void;
 
   // Marker actions
   addMarker: (time: number, label?: string, color?: string) => void;
@@ -4756,6 +4757,26 @@ export const useProjectStore = create<ProjectState>()(
           .getState()
           .getSubtitleEngine();
         return subtitleEngine.getStylePresets();
+      },
+
+      applySubtitleStyleToAll: (subtitleId: string) => {
+        const { project } = get();
+        const sourceSub = project.timeline.subtitles.find((s) => s.id === subtitleId);
+        if (!sourceSub) return;
+        set({
+          project: {
+            ...project,
+            timeline: {
+              ...project.timeline,
+              subtitles: project.timeline.subtitles.map((s) => ({
+                ...s,
+                style: sourceSub.style ? { ...sourceSub.style } : undefined,
+                animationStyle: sourceSub.animationStyle,
+              })),
+            },
+            modifiedAt: Date.now(),
+          },
+        });
       },
 
       // Marker actions
