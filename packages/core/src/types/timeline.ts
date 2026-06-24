@@ -211,7 +211,12 @@ export type CaptionAnimationStyle =
   | "bounce-jump"
   | "slide-in-right"
   | "fade-slide-up"
-  | "reveal-left";
+  | "reveal-left"
+  | "elastic-jello"
+  | "skew-wave"
+  | "smoke-rise"
+  | "spin-pop"
+  | "squeeze";
 
 export interface SubtitleWord {
   readonly text: string;

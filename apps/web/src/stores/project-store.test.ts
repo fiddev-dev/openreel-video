@@ -76,6 +76,7 @@ const {
       clipEffects.delete(clipId);
     }),
     getColorGrading: vi.fn(() => ({})),
+    resetColorGrading: vi.fn(() => ({ success: true })),
   };
 
   const trackTransitions = new Map<string, Transition[]>();
@@ -721,6 +722,52 @@ describe("ProjectStore", () => {
           params: { value: 20 },
         },
       ]);
+    });
+
+    it("should clear all effects, keyframes, and restore transform to default using clearClipEffects", () => {
+      useProjectStore.getState().loadProject(createProjectWithVideoClip());
+
+      // 1. Apply some modifications (effect, keyframes, transform modification)
+      const brightness = useProjectStore
+        .getState()
+        .addVideoEffect("video-clip-1", "brightness", { value: 10 });
+      expect(brightness).not.toBeNull();
+
+      // Modify transform
+      useProjectStore.getState().updateClipTransform("video-clip-1", {
+        scale: { x: 1.5, y: 1.5 },
+        position: { x: 20, y: -10 }
+      });
+
+      // Update keyframes
+      useProjectStore.getState().updateClipKeyframes("video-clip-1", [
+        { id: "kf1", time: 0, property: "position.x", value: 20, easing: "linear" }
+      ]);
+
+      const clipBefore = useProjectStore.getState().getClip("video-clip-1");
+      expect(clipBefore?.effects).toHaveLength(1);
+      expect(clipBefore?.keyframes).toHaveLength(1);
+      expect(clipBefore?.transform.scale).toEqual({ x: 1.5, y: 1.5 });
+
+      // 2. Clear effects
+      const success = useProjectStore.getState().clearClipEffects("video-clip-1");
+      expect(success).toBe(true);
+
+      // 3. Verify clip is returned to default/normal state
+      const clipAfter = useProjectStore.getState().getClip("video-clip-1");
+      expect(clipAfter?.effects).toEqual([]);
+      expect(clipAfter?.audioEffects).toEqual([]);
+      expect(clipAfter?.keyframes).toEqual([]);
+      expect(clipAfter?.transform).toEqual({
+        position: { x: 0, y: 0 },
+        scale: { x: 1, y: 1 },
+        rotation: 0,
+        anchor: { x: 0.5, y: 0.5 },
+        opacity: 1,
+        rotate3d: { x: 0, y: 0, z: 0 },
+        perspective: 1000,
+        transformStyle: "flat"
+      });
     });
   });
 

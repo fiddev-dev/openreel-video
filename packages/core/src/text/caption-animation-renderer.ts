@@ -13,6 +13,10 @@ export interface WordSegment {
   readonly offsetX?: number;
   readonly scaleX?: number;
   readonly scaleY?: number;
+  readonly shadowColor?: string;
+  readonly shadowBlur?: number;
+  readonly shadowOffsetX?: number;
+  readonly shadowOffsetY?: number;
 }
 
 export interface AnimatedCaptionFrame {
@@ -637,6 +641,272 @@ function renderRevealLeft(
   return { segments, visible: true };
 }
 
+function renderElasticJello(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const wobble = Math.sin(progress * 4 * Math.PI) * Math.exp(-progress * 3);
+    const scaleX = 1 + wobble * 0.25;
+    const scaleY = 1 - wobble * 0.25;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.15,
+      scaleX,
+      scaleY,
+      offsetY: 0,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSkewWave(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const wave = Math.sin(progress * 2 * Math.PI);
+    const rotation = wave * 8;
+    const offsetY = -Math.abs(wave) * 5;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.15,
+      offsetY,
+      rotation,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSmokeRise(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const easeProgress = 1 - Math.pow(1 - progress, 3);
+    const opacity = easeProgress;
+    const offsetY = 12 * (1 - easeProgress);
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity,
+      scale: 0.9 + easeProgress * 0.25,
+      offsetY,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSpinPop(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const spinProgress = clamp(progress / 0.4, 0, 1);
+    const scaleX = -Math.cos(spinProgress * Math.PI);
+    const zoomProgress = Math.sin(progress * Math.PI);
+    const scaleY = 1.0 + zoomProgress * 0.25;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.1,
+      scaleX,
+      scaleY,
+      offsetY: 0,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSqueeze(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  // Find active word index
+  let activeIndex = subtitle.words.findIndex(
+    (w) => currentTime >= w.startTime && currentTime < w.endTime,
+  );
+  if (activeIndex === -1) {
+    activeIndex = subtitle.words.reduce(
+      (maxIdx, w, idx) => (currentTime >= w.startTime ? idx : maxIdx),
+      -1,
+    );
+  }
+  if (activeIndex === -1) {
+    return { segments: [], visible: false };
+  }
+
+  // Paginate into pages of max 3 words
+  const pageIndex = Math.floor(activeIndex / 3);
+  const pageWords = subtitle.words.slice(pageIndex * 3, (pageIndex + 1) * 3);
+
+  const pageStartTime = pageWords[0].startTime;
+  const pageEndTime = pageWords[pageWords.length - 1].endTime;
+  const transitionDuration = 0.15; // 150ms transition
+
+  const highlightColor = subtitle.style?.highlightColor || "#ffff00";
+
+  // Check if we are in the page entry phase (all 3 words animate together at pageStartTime)
+  const isPageEntering = (currentTime - pageStartTime) < transitionDuration;
+  const entryProgress = isPageEntering
+    ? clamp((currentTime - pageStartTime) / transitionDuration, 0, 1)
+    : 1;
+
+  // Check if we are in the page exit phase (all 3 words animate together at pageEndTime)
+  const isPageExiting = (pageEndTime - currentTime) <= transitionDuration;
+  const exitProgress = isPageExiting
+    ? clamp((pageEndTime - currentTime) / transitionDuration, 0, 1)
+    : 1;
+
+  const segments: WordSegment[] = pageWords.map((word) => {
+    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
+
+    // Default base properties for the middle phase
+    let opacity = 1;
+    let scaleX = 1;
+    let scaleY = 1;
+    let scale = 1.0;
+    let shadowBlur = 0;
+    let shadowColor: string | undefined;
+
+    if (isPageEntering) {
+      const easeIn = 1 - Math.pow(1 - entryProgress, 3); // cubic ease out
+      opacity = easeIn;
+      scaleX = 1.8 - 0.8 * easeIn; // squeezed outward (stretched width starts at 1.8 -> settles to 1.0)
+      scaleY = 0.6 + 0.4 * easeIn; // squashed height starts at 0.6 -> settles to 1.0
+      scale = 1.0 + 0.15 * (1 - easeIn); // enlarged slightly at start
+      shadowBlur = 15 * (1 - easeIn);
+      shadowColor = highlightColor;
+    } else if (isPageExiting) {
+      const easeOut = Math.pow(exitProgress, 3); // cubic ease in
+      opacity = easeOut;
+      scaleX = 1.8 - 0.8 * easeOut; // squeezed outward (stretched width starts at 1.0 -> exits at 1.8)
+      scaleY = 0.6 + 0.4 * easeOut; // squashed height starts at 1.0 -> exits at 0.6
+      scale = 1.0 + 0.15 * (1 - easeOut); // enlarged slightly at end
+      shadowBlur = 15 * (1 - easeOut);
+      shadowColor = highlightColor;
+    }
+
+    return {
+      text: word.text,
+      style: isActive ? "active" : "normal",
+      opacity,
+      scale,
+      scaleX,
+      scaleY,
+      offsetY: 0,
+      color: isActive ? highlightColor : undefined,
+      shadowColor,
+      shadowBlur,
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+    };
+  });
+
+  return { segments, visible: true };
+}
+
 export function renderAnimatedCaption(
   subtitle: Subtitle,
   currentTime: number,
@@ -683,6 +953,16 @@ export function renderAnimatedCaption(
       return renderFadeSlideUp(normalizedSubtitle, currentTime);
     case "reveal-left":
       return renderRevealLeft(normalizedSubtitle, currentTime);
+    case "elastic-jello":
+      return renderElasticJello(normalizedSubtitle, currentTime);
+    case "skew-wave":
+      return renderSkewWave(normalizedSubtitle, currentTime);
+    case "smoke-rise":
+      return renderSmokeRise(normalizedSubtitle, currentTime);
+    case "spin-pop":
+      return renderSpinPop(normalizedSubtitle, currentTime);
+    case "squeeze":
+      return renderSqueeze(normalizedSubtitle, currentTime);
     case "none":
     default:
       return renderNone(normalizedSubtitle);
@@ -708,6 +988,11 @@ export function getAnimationStyleDisplayName(
     "slide-in-right": "Slide In Right (CapCut)",
     "fade-slide-up": "Fade Slide Up (CapCut)",
     "reveal-left": "Reveal Left (CapCut)",
+    "elastic-jello": "Jello Elastic",
+    "skew-wave": "Rotational Wave",
+    "smoke-rise": "Smoke Rise",
+    "spin-pop": "3D Spin Pop",
+    squeeze: "Squeeze (3 Words)",
   };
   return names[style];
 }
@@ -728,4 +1013,9 @@ export const CAPTION_ANIMATION_STYLES: CaptionAnimationStyle[] = [
   "slide-in-right",
   "fade-slide-up",
   "reveal-left",
+  "elastic-jello",
+  "skew-wave",
+  "smoke-rise",
+  "spin-pop",
+  "squeeze",
 ];

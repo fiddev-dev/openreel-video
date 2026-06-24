@@ -7,11 +7,23 @@ const DEFAULT_CONFIG: FrameCacheConfig = {
   preloadBehind: 10,
 };
 
+// ─── O(1) LRU doubly-linked list node ────────────────────────────────────────
+interface LRUNode {
+  key: string;
+  prev: LRUNode | null;
+  next: LRUNode | null;
+}
+
 export class FrameCache {
   private cache: Map<string, CachedFrame> = new Map();
   private config: FrameCacheConfig;
   private stats = { hits: 0, misses: 0 };
   private totalSizeBytes = 0;
+
+  // O(1) LRU tracking — head = most recently used, tail = least recently used
+  private lruHead: LRUNode | null = null; // MRU sentinel
+  private lruTail: LRUNode | null = null; // LRU sentinel
+  private lruMap: Map<string, LRUNode> = new Map();
 
   constructor(config: Partial<FrameCacheConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -31,6 +43,8 @@ export class FrameCache {
     const entry = this.cache.get(key);
     if (entry) {
       entry.lastAccessed = Date.now();
+      // Move to front of LRU list (most recently used)
+      this.lruMoveToFront(key);
       this.stats.hits++;
       return entry.image;
     }
@@ -68,6 +82,8 @@ export class FrameCache {
     });
 
     this.totalSizeBytes += sizeBytes;
+    // Add to front of LRU list
+    this.lruAddToFront(key);
   }
 
   delete(key: string): boolean {
@@ -75,6 +91,7 @@ export class FrameCache {
     if (entry) {
       entry.image.close();
       this.totalSizeBytes -= entry.sizeBytes;
+      this.lruRemove(key);
       return this.cache.delete(key);
     }
     return false;
@@ -97,6 +114,9 @@ export class FrameCache {
       entry.image.close();
     }
     this.cache.clear();
+    this.lruMap.clear();
+    this.lruHead = null;
+    this.lruTail = null;
     this.totalSizeBytes = 0;
     this.stats = { hits: 0, misses: 0 };
   }
@@ -185,30 +205,61 @@ export class FrameCache {
 
   private evictIfNeeded(newFrameSize: number): void {
     while (this.cache.size >= this.config.maxFrames) {
-      this.evictOldest();
+      this.evictLRU();
     }
     while (
       this.totalSizeBytes + newFrameSize > this.config.maxSizeBytes &&
       this.cache.size > 0
     ) {
-      this.evictOldest();
+      this.evictLRU();
     }
   }
 
-  private evictOldest(): void {
-    let oldestKey = "";
-    let oldestTime = Infinity;
+  /**
+   * Evict the least recently used frame in O(1) using the LRU doubly-linked list.
+   */
+  private evictLRU(): void {
+    if (!this.lruTail) return;
+    this.delete(this.lruTail.key);
+  }
 
-    for (const [key, entry] of this.cache.entries()) {
-      if (entry.lastAccessed < oldestTime) {
-        oldestTime = entry.lastAccessed;
-        oldestKey = key;
-      }
-    }
+  // ─── LRU doubly-linked list helpers ──────────────────────────────────────
 
-    if (oldestKey) {
-      this.delete(oldestKey);
+  private lruAddToFront(key: string): void {
+    const node: LRUNode = { key, prev: null, next: null };
+    this.lruMap.set(key, node);
+    if (!this.lruHead) {
+      this.lruHead = node;
+      this.lruTail = node;
+    } else {
+      node.next = this.lruHead;
+      this.lruHead.prev = node;
+      this.lruHead = node;
     }
+  }
+
+  private lruMoveToFront(key: string): void {
+    const node = this.lruMap.get(key);
+    if (!node || node === this.lruHead) return;
+    // Unlink from current position
+    if (node.prev) node.prev.next = node.next;
+    if (node.next) node.next.prev = node.prev;
+    if (node === this.lruTail) this.lruTail = node.prev;
+    // Re-insert at front
+    node.prev = null;
+    node.next = this.lruHead;
+    if (this.lruHead) this.lruHead.prev = node;
+    this.lruHead = node;
+  }
+
+  private lruRemove(key: string): void {
+    const node = this.lruMap.get(key);
+    if (!node) return;
+    if (node.prev) node.prev.next = node.next;
+    if (node.next) node.next.prev = node.prev;
+    if (node === this.lruHead) this.lruHead = node.next;
+    if (node === this.lruTail) this.lruTail = node.prev;
+    this.lruMap.delete(key);
   }
 
   getCachedTimestamps(mediaId: string): number[] {

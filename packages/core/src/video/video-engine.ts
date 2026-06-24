@@ -98,8 +98,9 @@ export class VideoEngine {
   private useParallelDecoding = true;
   private videoElementCache: Map<
     string,
-    { video: HTMLVideoElement; url: string }
+    { video: HTMLVideoElement; url: string; lastUsed: number }
   > = new Map();
+  private static readonly MAX_VIDEO_ELEMENT_CACHE_SIZE = 8;
 
   private gpuCompositor: GPUCompositor | null = null;
   private gpuRenderer: Renderer | null = null;
@@ -414,6 +415,10 @@ export class VideoEngine {
     height: number,
   ): Promise<ImageBitmap | null> {
     let cached = this.videoElementCache.get(mediaId);
+    if (cached) {
+      // Update LRU timestamp on hit
+      cached.lastUsed = Date.now();
+    }
 
     if (!cached) {
       const url = URL.createObjectURL(blob);
@@ -429,7 +434,28 @@ export class VideoEngine {
         setTimeout(() => reject(new Error("Video load timeout")), 10000);
       });
 
-      cached = { video, url };
+      cached = { video, url, lastUsed: Date.now() };
+
+      // Evict oldest entry if cache is full (LRU eviction, O(n) but only 8 entries max)
+      if (this.videoElementCache.size >= VideoEngine.MAX_VIDEO_ELEMENT_CACHE_SIZE) {
+        let oldestKey = "";
+        let oldestTime = Infinity;
+        for (const [k, v] of this.videoElementCache) {
+          if (v.lastUsed < oldestTime) {
+            oldestTime = v.lastUsed;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) {
+          const evicted = this.videoElementCache.get(oldestKey);
+          if (evicted) {
+            evicted.video.src = "";
+            URL.revokeObjectURL(evicted.url);
+          }
+          this.videoElementCache.delete(oldestKey);
+        }
+      }
+
       this.videoElementCache.set(mediaId, cached);
     }
 

@@ -51,6 +51,7 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
     pasteEffects,
     copiedEffects,
     closeGapBeforeClip,
+    clearClipEffects,
   } = useProjectStore();
   const { playheadPosition } = useTimelineStore();
 
@@ -79,6 +80,21 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
 
   const hasEffects = clip.effects && clip.effects.length > 0;
   const hasCopiedEffects = copiedEffects && copiedEffects.length > 0;
+  const hasKeyframes = clip.keyframes && clip.keyframes.length > 0;
+  const hasAudioEffects = clip.audioEffects && clip.audioEffects.length > 0;
+
+  const hasTransformModified = React.useMemo(() => {
+    if (!clip.transform) return false;
+    const t = clip.transform;
+    return (
+      t.position?.x !== 0 ||
+      t.position?.y !== 0 ||
+      t.scale?.x !== 1 ||
+      t.scale?.y !== 1 ||
+      t.rotation !== 0 ||
+      (t.rotate3d && (t.rotate3d.x !== 0 || t.rotate3d.y !== 0 || t.rotate3d.z !== 0))
+    );
+  }, [clip.transform]);
 
   const handleCopy = () => {
     copyClips([clip.id]);
@@ -185,6 +201,16 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
     onClose?.();
   };
 
+  const handleClearEffects = () => {
+    const success = clearClipEffects(clip.id);
+    if (success) {
+      toast.success("Effects Removed", "Successfully reverted clip back to normal.");
+    } else {
+      toast.error("Failed", "Failed to remove effects from the clip.");
+    }
+    onClose?.();
+  };
+
   const getClipTypeLabel = () => {
     if (isVideo) return "Video Clip";
     if (isAudio) return "Audio Clip";
@@ -252,6 +278,14 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
               <ContextMenuItem onClick={handlePasteEffects} disabled={!hasCopiedEffects}>
                 Paste Effects
               </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                onClick={handleClearEffects}
+                disabled={!hasEffects && !hasKeyframes && !hasTransformModified}
+                className="text-red-400 focus:text-red-400"
+              >
+                Clear All Effects & Transforms
+              </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
         </>
@@ -281,6 +315,14 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
               </ContextMenuItem>
               <ContextMenuItem onClick={handlePasteEffects} disabled={!hasCopiedEffects}>
                 Paste Audio Effects
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                onClick={handleClearEffects}
+                disabled={!hasAudioEffects}
+                className="text-red-400 focus:text-red-400"
+              >
+                Clear Audio Effects
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>

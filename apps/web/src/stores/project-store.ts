@@ -433,6 +433,7 @@ export interface ProjectState {
   ) => boolean;
   getColorGrading: (clipId: string) => ColorGradingSettings;
   resetColorGrading: (clipId: string) => boolean;
+  clearClipEffects: (clipId: string) => boolean;
 
   // Audio effects actions
   addAudioEffect: (clipId: string, effect: Effect) => boolean;
@@ -5935,6 +5936,56 @@ export const useProjectStore = create<ProjectState>()(
 
         // Trigger re-render by updating project state
         set({ project: { ...get().project, modifiedAt: Date.now() } });
+        return true;
+      },
+
+      /**
+       * Clear all effects (visual, audio, keyframes, stabilization) and restore transform to default
+       */
+      clearClipEffects: (clipId: string) => {
+        const { project } = get();
+        const effectsBridge = getEffectsBridge();
+
+        // Reset/delete effects inside effectsBridge if initialized
+        if (effectsBridge.isInitialized()) {
+          effectsBridge.clearEffects(clipId);
+          effectsBridge.resetColorGrading(clipId);
+        }
+
+        const defaultTransform = {
+          position: { x: 0, y: 0 },
+          scale: { x: 1, y: 1 },
+          rotation: 0,
+          anchor: { x: 0.5, y: 0.5 },
+          opacity: 1,
+          rotate3d: { x: 0, y: 0, z: 0 },
+          perspective: 1000,
+          transformStyle: "flat" as const,
+        };
+
+        const updatedProject = updateProjectClip(project, clipId, (clip) => ({
+          ...clip,
+          effects: [],
+          audioEffects: [],
+          keyframes: [],
+          transform: defaultTransform,
+          stabilization: clip.stabilization
+            ? {
+                ...clip.stabilization,
+                enabled: false,
+              }
+            : undefined,
+        }));
+
+        if (!updatedProject) {
+          console.error("Failed to clear clip effects: clip not found");
+          return false;
+        }
+
+        // Sync with the effects bridge
+        syncClipEffectsBridge(updatedProject, clipId);
+
+        set({ project: updatedProject });
         return true;
       },
 

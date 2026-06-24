@@ -16,6 +16,7 @@ import {
   type HighlightResult,
   type HighlightPreferences,
 } from "../../../services/highlight-service";
+import { useBackgroundTaskStore } from "../../../stores/background-task-store";
 
 interface HighlightExtractorPanelProps {
   clipId: string;
@@ -25,7 +26,7 @@ interface HighlightExtractorPanelProps {
 const highlightsCache = new Map<string, HighlightResult[]>();
 const selectedCache = new Map<string, Set<number>>();
 
-export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = ({
+export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = React.memo(({
   clipId,
 }) => {
   const clipIdRef = useRef(clipId);
@@ -67,6 +68,14 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
   const [error, setError] = useState<string | null>(null);
   const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("openreel:gemini_api_key") || "");
 
+  const abortRef = useRef<AbortController | null>(null);
+
+  const addTask = useBackgroundTaskStore((s) => s.addTask);
+  const updateTask = useBackgroundTaskStore((s) => s.updateTask);
+  const completeTask = useBackgroundTaskStore((s) => s.completeTask);
+  const failTask = useBackgroundTaskStore((s) => s.failTask);
+  const cancelTask = useBackgroundTaskStore((s) => s.cancelTask);
+
   const project = useProjectStore((s) => s.project);
   const getMediaItem = useProjectStore((s) => s.getMediaItem);
   const setPlayheadPosition = useTimelineStore((s) => s.setPlayheadPosition);
@@ -91,6 +100,18 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
       setError("Media not found or not loaded");
       return;
     }
+
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
+    const taskId = addTask({
+      id: `highlight-extract-${clipId}`,
+      name: "AI Highlight Extractor",
+      description: "Analyzing audio and transcript for best moments",
+      progress: 0,
+      message: "Initializing...",
+      cancel: () => abortController.abort(),
+    });
 
     setIsProcessing(true);
     setError(null);
@@ -123,6 +144,7 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
       if (clipSubtitles.length > 0) {
         setPhase("Using existing subtitles...");
         setProgress(10);
+        updateTask(taskId, { progress: 10, message: "Using existing subtitles..." });
         transcript = clipSubtitles.flatMap((sub: Subtitle) => {
           const startRel = Math.max(clip.inPoint, sub.startTime - clip.startTime + clip.inPoint);
           const endRel = Math.min(clip.inPoint + clip.duration, sub.endTime - clip.startTime + clip.inPoint);
@@ -137,6 +159,7 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
       } else {
         setPhase("Transcribing audio...");
         setProgress(5);
+        updateTask(taskId, { progress: 5, message: "Transcribing audio..." });
 
         const transcriptionService = getTranscriptionService() || initializeTranscriptionService({
           apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
@@ -144,7 +167,12 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
         const subtitles = await transcriptionService.transcribeClip(
           clip,
           mediaItem,
-          (p) => setProgress(Math.round(p.progress * 20)),
+          (p) => {
+            if (abortController.signal.aborted) return;
+            const prog = Math.round(p.progress * 20);
+            setProgress(prog);
+            updateTask(taskId, { progress: prog, message: p.message });
+          },
         );
 
         transcript = subtitles.flatMap((sub) => {
@@ -164,6 +192,8 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
         throw new Error("No transcript words found. Please generate auto-captions first or ensure the video has audio.");
       }
 
+      if (abortController.signal.aborted) return;
+
       let results: HighlightResult[];
       if (geminiApiKey.trim()) {
         results = await extractHighlightsWithGemini(
@@ -171,13 +201,17 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
           geminiApiKey,
           preferences,
           (phaseName, prog) => {
+            if (abortController.signal.aborted) return;
+            const total = 25 + Math.round(prog * 0.75);
             setPhase(phaseName);
-            setProgress(25 + Math.round(prog * 0.75));
+            setProgress(total);
+            updateTask(taskId, { progress: total, message: phaseName });
           }
         );
       } else {
         setPhase("Decoding audio...");
         setProgress(25);
+        updateTask(taskId, { progress: 25, message: "Decoding audio..." });
 
         const arrayBuffer = await mediaItem.blob.arrayBuffer();
         const audioContext = new OfflineAudioContext(1, 44100, 44100);
@@ -188,22 +222,36 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
           transcript,
           preferences,
           (phaseName, prog) => {
+            if (abortController.signal.aborted) return;
+            const total = 25 + Math.round(prog * 0.75);
             setPhase(phaseName);
-            setProgress(25 + Math.round(prog * 0.75));
+            setProgress(total);
+            updateTask(taskId, { progress: total, message: phaseName });
           },
         );
       }
 
+      if (abortController.signal.aborted) return;
+
       setHighlights(results);
       setSelected(new Set(results.map((_, i) => i)));
+      completeTask(taskId);
+      toast.success("Highlights Found", `Found ${results.length} highlight moments`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed");
+      if ((err as Error)?.name === "AbortError" || abortRef.current?.signal.aborted) {
+        cancelTask(taskId);
+      } else {
+        const errMsg = err instanceof Error ? err.message : "Analysis failed";
+        failTask(taskId, errMsg);
+        setError(errMsg);
+      }
     } finally {
       setIsProcessing(false);
       setPhase("");
       setProgress(0);
+      abortRef.current = null;
     }
-  }, [clipId, project, getMediaItem, preferences, geminiApiKey]);
+  }, [clipId, project, getMediaItem, preferences, geminiApiKey, addTask, updateTask, completeTask, failTask, cancelTask]);
 
   const handleAppendHighlight = useCallback(
     async (highlight: HighlightResult) => {
@@ -542,6 +590,8 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
       )}
     </div>
   );
-};
+});
+
+HighlightExtractorPanel.displayName = "HighlightExtractorPanel";
 
 export default HighlightExtractorPanel;

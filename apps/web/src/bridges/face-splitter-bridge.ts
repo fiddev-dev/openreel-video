@@ -128,10 +128,16 @@ export class FaceSplitterBridge {
         return { success: true, splitsApplied: 0 };
       }
 
-      // 5. Apply temporal smoothing (sliding window majority vote with window size 7)
-      const smoothedStates = this.smoothStates(rawStates, 7);
+      // 5. Pre-smooth: absorb short no_face gaps into surrounding face state.
+      //    If no_face persists < 2 seconds (20 frames @ 10fps), it's likely
+      //    a detection miss rather than a real scene change — fill it in.
+      const NO_FACE_ABSORB_FRAMES = 20; // 2 seconds @ 10fps
+      const absorbedStates = this.absorbShortNoFaceGaps(rawStates, NO_FACE_ABSORB_FRAMES);
 
-      // 6. Construct initial segments from the smoothed states
+      // 6. Apply temporal smoothing (sliding window majority vote, window = 15 frames = 1.5s)
+      const smoothedStates = this.smoothStates(absorbedStates, 15);
+
+      // 7. Construct initial segments from the smoothed states — skip no_face as its own segment
       const rawSplitTimes: number[] = [];
       for (let i = 1; i < smoothedStates.length; i++) {
         if (smoothedStates[i] !== smoothedStates[i - 1]) {
@@ -162,7 +168,7 @@ export class FaceSplitterBridge {
         duration: (clip.startTime + clip.duration) - prevTime,
       });
 
-      // 7. Enforce minimum duration constraint by merging short segments
+      // 8. Enforce minimum duration constraint by merging short segments
       let merged = true;
       while (merged && segments.length > 1) {
         merged = false;
@@ -196,7 +202,7 @@ export class FaceSplitterBridge {
         }
       }
 
-      // Collect final split times (boundaries between the remaining segments)
+      // 9. Collect final split times (boundaries between the remaining segments)
       const finalSplitTimes: number[] = [];
       for (let i = 0; i < segments.length - 1; i++) {
         finalSplitTimes.push(segments[i].endTime);
@@ -207,7 +213,7 @@ export class FaceSplitterBridge {
         return { success: true, splitsApplied: 0 };
       }
 
-      // 8. Execute splits in reverse chronological (descending) order on the timeline
+      // 10. Execute splits in reverse chronological (descending) order on the timeline
       onProgress?.(95, `Applying ${finalSplitTimes.length} split(s)...`);
       const sortedSplitTimes = [...finalSplitTimes].sort((a, b) => b - a);
 
@@ -261,8 +267,8 @@ export class FaceSplitterBridge {
     if (!nose) return "front_face";
 
     let ratio = 0.5;
-    
-    // Prioritize eye keypoints for head turn detection as they are high-contrast and rarely occluded
+
+    // Prioritize eye keypoints for head turn detection
     if (leftEye && rightEye) {
       const distLeft = Math.abs(nose.x - leftEye.x);
       const distRight = Math.abs(nose.x - rightEye.x);
@@ -279,12 +285,48 @@ export class FaceSplitterBridge {
       }
     }
 
-    // A balanced ratio (0.35 to 0.65) indicates front-facing, skewed indicates side profile
-    if (ratio >= 0.35 && ratio <= 0.65) {
+    // Wider tolerance: head must be clearly turned (outside 0.30–0.70) to count as side_face.
+    // Reduces false splits from minor head movements or slight camera angles.
+    if (ratio >= 0.30 && ratio <= 0.70) {
       return "front_face";
     } else {
       return "side_face";
     }
+  }
+
+  /**
+   * Fills short `no_face` runs with the most recent non-no_face state seen before that run.
+   * This prevents momentary face-detection misses from being treated as real scene transitions.
+   */
+  private absorbShortNoFaceGaps(states: string[], maxGapFrames: number): string[] {
+    const result = [...states];
+    let prevFaceState = "front_face"; // fallback if clip starts with no_face
+
+    let i = 0;
+    while (i < result.length) {
+      if (result[i] === "no_face") {
+        // Find end of this no_face run
+        let j = i;
+        while (j < result.length && result[j] === "no_face") {
+          j++;
+        }
+        const runLength = j - i;
+
+        if (runLength <= maxGapFrames) {
+          // Short gap — fill with the prevFaceState (absorb into surroundings)
+          for (let k = i; k < j; k++) {
+            result[k] = prevFaceState;
+          }
+        }
+        // else: long no_face run → keep as is
+        i = j;
+      } else {
+        prevFaceState = result[i];
+        i++;
+      }
+    }
+
+    return result;
   }
 
   private smoothStates(states: string[], windowSize: number = 7): string[] {

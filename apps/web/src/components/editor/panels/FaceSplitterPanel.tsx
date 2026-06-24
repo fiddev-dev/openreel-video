@@ -1,34 +1,47 @@
-import React, { useState, useCallback } from "react";
-import { Scissors, Loader2, CheckCircle, Timer } from "lucide-react";
+import React, { useState, useCallback, useRef } from "react";
+import { Scissors, Loader2, CheckCircle, Timer, X } from "lucide-react";
 import { Slider, Checkbox, Label } from "@openreel/ui";
 import { toast } from "../../../stores/notification-store";
 import { getFaceSplitterBridge } from "../../../bridges/face-splitter-bridge";
 import { useProjectStore } from "../../../stores/project-store";
 import { getAutoReframeBridge } from "../../../bridges/auto-reframe-bridge";
+import {
+  useBackgroundTaskStore,
+} from "../../../stores/background-task-store";
 
 interface FaceSplitterPanelProps {
   clipId: string;
 }
 
-export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) => {
+// Module-level task ID tracker per clipId so panel re-mounts can still show status
+const runningTaskIds = new Map<string, string>();
+
+export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = React.memo(({ clipId }) => {
   const [minDuration, setMinDuration] = useState<number>(2.0);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressMessage, setProgressMessage] = useState("");
   const [autoFocusFace, setAutoFocusFace] = useState(false);
   const [lastResult, setLastResult] = useState<{ splitsApplied: number } | null>(null);
 
-  const handleRunSplitter = useCallback(async () => {
-    setIsProcessing(true);
-    setProgress(0);
-    setProgressMessage("Initializing...");
-    setLastResult(null);
+  const abortRef = useRef<AbortController | null>(null);
 
+  const addTask = useBackgroundTaskStore((s) => s.addTask);
+  const updateTask = useBackgroundTaskStore((s) => s.updateTask);
+  const completeTask = useBackgroundTaskStore((s) => s.completeTask);
+  const failTask = useBackgroundTaskStore((s) => s.failTask);
+  const cancelTask = useBackgroundTaskStore((s) => s.cancelTask);
+  const tasks = useBackgroundTaskStore((s) => s.tasks);
+
+  // Check if a task for this clip is already running
+  const currentTaskId = runningTaskIds.get(clipId);
+  const currentTask = currentTaskId ? tasks.find((t) => t.id === currentTaskId) : null;
+  const isProcessing = currentTask?.status === "running";
+  const progress = currentTask?.progress ?? 0;
+  const progressMessage = currentTask?.message ?? "";
+
+  const handleRunSplitter = useCallback(async () => {
     const store = useProjectStore.getState();
     const clip = store.getClip(clipId);
     if (!clip) {
       toast.error("Error", "Clip not found");
-      setIsProcessing(false);
       return;
     }
     const originalTrackId = clip.trackId;
@@ -36,27 +49,44 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
     const rangeStart = clip.startTime;
     const rangeEnd = clip.startTime + clip.duration;
 
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
+    const taskId = addTask({
+      id: `face-splitter-${clipId}`,
+      name: "AI Face Scene Splitter",
+      description: `Splitting clip by face orientation`,
+      progress: 0,
+      message: "Initializing...",
+      cancel: () => {
+        abortController.abort();
+      },
+    });
+    runningTaskIds.set(clipId, taskId);
+    setLastResult(null);
+
     try {
       const bridge = getFaceSplitterBridge();
+
       const result = await bridge.runFaceSplitter(clipId, minDuration, (prog, msg) => {
-        // Map 0-100% of splitter to 0-90% if autofocus is enabled
+        if (abortController.signal.aborted) return;
         const scaledProgress = autoFocusFace ? Math.round(prog * 0.9) : prog;
-        setProgress(scaledProgress);
-        setProgressMessage(msg);
+        updateTask(taskId, { progress: scaledProgress, message: msg });
       });
+
+      if (abortController.signal.aborted) return;
 
       if (!result.success) {
         throw new Error(result.error || "Failed to split clip");
       }
 
       if (autoFocusFace) {
-        setProgress(90);
-        setProgressMessage("Finding split clips on timeline...");
+        updateTask(taskId, { progress: 90, message: "Finding split clips on timeline..." });
         const updatedProject = useProjectStore.getState().project;
         if (updatedProject) {
           const splitClips = updatedProject.timeline.tracks
             .find(t => t.id === originalTrackId)
-            ?.clips.filter(c => 
+            ?.clips.filter(c =>
               c.mediaId === originalMediaId &&
               c.startTime >= rangeStart - 0.01 &&
               c.startTime + c.duration <= rangeEnd + 0.01
@@ -67,13 +97,16 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
           if (sortedSplitClips.length > 0) {
             const autoReframeBridge = getAutoReframeBridge();
             for (let i = 0; i < sortedSplitClips.length; i++) {
+              if (abortController.signal.aborted) return;
               const splitClip = sortedSplitClips[i];
-              setProgressMessage(`Auto-focusing face on clip ${i + 1}/${sortedSplitClips.length}...`);
               await autoReframeBridge.runAutoFocusFace(splitClip.id, (prog, msg) => {
+                if (abortController.signal.aborted) return;
                 const baseProgress = 90 + Math.round((i / sortedSplitClips.length) * 10);
                 const subProgress = Math.round((prog / 100) * (10 / sortedSplitClips.length));
-                setProgress(baseProgress + subProgress);
-                setProgressMessage(`Clip ${i + 1}/${sortedSplitClips.length}: ${msg}`);
+                updateTask(taskId, {
+                  progress: baseProgress + subProgress,
+                  message: `Clip ${i + 1}/${sortedSplitClips.length}: ${msg}`,
+                });
               });
             }
           }
@@ -81,22 +114,35 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
       }
 
       setLastResult({ splitsApplied: result.splitsApplied });
+      completeTask(taskId);
+      runningTaskIds.delete(clipId);
+
       toast.success(
         "Face Splitter Completed",
         result.splitsApplied > 0
-          ? `Successfully split the clip into ${result.splitsApplied + 1} scenes on the timeline${autoFocusFace ? " and applied Auto Focus Face to all split clips" : ""}.`
-          : `The clip is already optimized. No splits were required${autoFocusFace ? ", applied Auto Focus Face to the clip" : ""}.`
+          ? `Successfully split into ${result.splitsApplied + 1} scenes${autoFocusFace ? " with Auto Focus Face applied" : ""}.`
+          : `No splits required${autoFocusFace ? ", applied Auto Focus Face to the clip" : ""}.`
       );
     } catch (error) {
-      console.error("Face Splitter failed:", error);
-      toast.error(
-        "Face Splitter Failed",
-        error instanceof Error ? error.message : "Unknown error occurred"
-      );
-    } finally {
-      setIsProcessing(false);
+      if (abortController.signal.aborted) {
+        cancelTask(taskId);
+      } else {
+        const errMsg = error instanceof Error ? error.message : "Unknown error occurred";
+        failTask(taskId, errMsg);
+        toast.error("Face Splitter Failed", errMsg);
+      }
+      runningTaskIds.delete(clipId);
     }
-  }, [clipId, minDuration, autoFocusFace]);
+  }, [clipId, minDuration, autoFocusFace, addTask, updateTask, completeTask, failTask, cancelTask]);
+
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+    const taskId = runningTaskIds.get(clipId);
+    if (taskId) {
+      cancelTask(taskId);
+      runningTaskIds.delete(clipId);
+    }
+  }, [clipId, cancelTask]);
 
   return (
     <div className="space-y-4">
@@ -145,11 +191,21 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
           </Label>
         </div>
 
+        {/* Progress shown inline while panel is open — full status in BackgroundTaskIndicator */}
         {isProcessing && (
           <div className="space-y-1.5 pt-2">
             <div className="flex items-center justify-between text-[9px]">
-              <span className="text-text-muted truncate max-w-[80%]">{progressMessage}</span>
-              <span className="text-text-muted font-mono">{progress}%</span>
+              <span className="text-text-muted truncate max-w-[75%]">{progressMessage}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted font-mono">{progress}%</span>
+                <button
+                  onClick={handleCancel}
+                  title="Cancel"
+                  className="text-text-muted hover:text-red-400 transition-colors"
+                >
+                  <X size={10} />
+                </button>
+              </div>
             </div>
             <div className="h-1 bg-background-secondary rounded-full overflow-hidden">
               <div
@@ -157,6 +213,9 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
                 style={{ width: `${progress}%` }}
               />
             </div>
+            <p className="text-[9px] text-primary/70 italic">
+              Processing in background — you can continue editing
+            </p>
           </div>
         )}
 
@@ -194,4 +253,6 @@ export const FaceSplitterPanel: React.FC<FaceSplitterPanelProps> = ({ clipId }) 
       </div>
     </div>
   );
-};
+});
+
+FaceSplitterPanel.displayName = "FaceSplitterPanel";

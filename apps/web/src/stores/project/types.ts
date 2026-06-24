@@ -348,6 +348,7 @@ export interface ProjectState {
   ) => boolean;
   getColorGrading: (clipId: string) => ColorGradingSettings;
   resetColorGrading: (clipId: string) => boolean;
+  clearClipEffects: (clipId: string) => boolean;
 
   addAudioEffect: (clipId: string, effect: Effect) => boolean;
   updateAudioEffect: (

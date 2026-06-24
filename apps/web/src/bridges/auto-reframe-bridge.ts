@@ -202,28 +202,215 @@ export class AutoReframeBridge {
   ): Promise<ReframeResult> {
     const store = useProjectStore.getState();
     const project = store.project;
-    if (!project) {
-      throw new Error("Project not found");
-    }
+    if (!project) throw new Error("Project not found");
+
+    const clip = store.getClip(clipId);
+    if (!clip) throw new Error("Clip not found");
 
     const projectWidth = project.settings.width;
     const projectHeight = project.settings.height;
     const projectRatio = projectWidth / projectHeight;
 
-    const settings: ReframeSettings = {
-      targetAspectRatio: "custom",
-      customRatio: projectRatio,
-      trackingSpeed: 0.5,
-      padding: 0.1,
-      smoothing: 0.8,
-      followSubject: true,
-      centerBias: 0.0, // Put the face exactly in the center
-      zoomOnSubject: true,
-      subjectScaleMultiplier: 3.5,
-      verticalAlign: 0.5, // Center face vertically
-    };
+    // --- 1. Initialize engine ---
+    onProgress?.(5, "Initializing face detection...");
+    const engine = initializeAutoReframeEngine();
+    await engine.initialize((p, msg) => {
+      onProgress?.(5 + p * 0.15, `Engine: ${msg}`);
+    });
 
-    return this.runAutoReframe(clipId, settings, onProgress);
+    // --- 2. Load media blob ---
+    onProgress?.(20, "Loading video source...");
+    const blob = await loadMediaBlob(clip.mediaId);
+    if (!blob) throw new Error("Failed to load media source file");
+
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement("video");
+    video.src = url;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error("Failed to load video metadata"));
+        setTimeout(() => reject(new Error("Video metadata timeout")), 10000);
+      });
+
+      const inPoint = clip.inPoint ?? 0;
+      const outPoint = (clip.outPoint ?? video.duration) || 10;
+      const clipDuration = outPoint - inPoint;
+
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+
+      // Fit video into project canvas
+      const videoAspect = videoWidth / videoHeight;
+      let drawWidth: number;
+      if (videoAspect > projectRatio) {
+        drawWidth = projectWidth;
+      } else {
+        drawWidth = projectHeight * videoAspect;
+      }
+      const baseScale = drawWidth / videoWidth;
+
+      // Scale frames for analysis to limit memory usage
+      const analysisScale = Math.min(1, 1080 / videoWidth);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(videoWidth * analysisScale);
+      canvas.height = Math.round(videoHeight * analysisScale);
+      const ctx = canvas.getContext("2d")!;
+
+      // --- 3. Sample frames — one every 2 seconds, capped at 30 ---
+      const SAMPLE_INTERVAL = 2.0; // seconds
+      const MAX_SAMPLES = 30;
+      const sampleTimes: number[] = [];
+      for (let t = inPoint; t < outPoint; t += SAMPLE_INTERVAL) {
+        sampleTimes.push(t);
+        if (sampleTimes.length >= MAX_SAMPLES) break;
+      }
+      // Always include a mid-point if only 1 sample
+      if (sampleTimes.length === 1 && clipDuration > 1) {
+        sampleTimes.push(inPoint + clipDuration / 2);
+      }
+
+      // --- 4. Detect faces in each sampled frame ---
+      const ZOOM_MULTIPLIER = 3.5;
+      const VERTICAL_ALIGN = 0.5; // center face vertically
+
+      // Collect candidate crop parameters from all frames where a face was found
+      const cropXList: number[] = [];
+      const cropYList: number[] = [];
+      const cropWList: number[] = [];
+      const cropHList: number[] = [];
+      const scaleList: number[] = [];
+
+      for (let i = 0; i < sampleTimes.length; i++) {
+        const t = sampleTimes[i];
+        const prog = 25 + Math.round((i / sampleTimes.length) * 55);
+        onProgress?.(prog, `Analyzing frame ${i + 1}/${sampleTimes.length}...`);
+
+        video.currentTime = t;
+        await new Promise<void>((resolve) => {
+          video.onseeked = () => resolve();
+          setTimeout(resolve, 3000); // don't hang forever
+        });
+
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const bitmap = await createImageBitmap(canvas);
+        const detections = await engine.detectFacesRaw(bitmap);
+        bitmap.close();
+
+        if (detections.length === 0) continue;
+
+        // Pick the largest/most confident face
+        const best = detections.reduce((a: any, b: any) => {
+          const aArea = (a.boundingBox?.width ?? 0) * (a.boundingBox?.height ?? 0) * (a.categories?.[0]?.score ?? 0);
+          const bArea = (b.boundingBox?.width ?? 0) * (b.boundingBox?.height ?? 0) * (b.categories?.[0]?.score ?? 0);
+          return bArea > aArea ? b : a;
+        }, detections[0]);
+
+        const bb = best.boundingBox;
+        if (!bb) continue;
+
+        // Scale bbox back to original video pixel space
+        const faceX = bb.originX / analysisScale;
+        const faceY = bb.originY / analysisScale;
+        const faceW = bb.width / analysisScale;
+        const faceH = bb.height / analysisScale;
+
+        // Compute ideal crop rectangle centered on the face
+        let cropH = Math.max(450, Math.min(videoHeight, faceH * ZOOM_MULTIPLIER));
+        let cropW = cropH * projectRatio;
+        if (cropW > videoWidth) {
+          cropW = videoWidth;
+          cropH = cropW / projectRatio;
+        }
+
+        const faceCenterX = faceX + faceW / 2;
+        const faceCenterY = faceY + faceH / 2;
+
+        let cx = faceCenterX - cropW / 2;
+        let cy = faceCenterY - cropH * VERTICAL_ALIGN;
+
+        // Clamp to video bounds
+        cx = Math.max(0, Math.min(cx, videoWidth - cropW));
+        cy = Math.max(0, Math.min(cy, videoHeight - cropH));
+
+        cropXList.push(cx);
+        cropYList.push(cy);
+        cropWList.push(cropW);
+        cropHList.push(cropH);
+
+        // Compute scale and position for the timeline keyframe
+        const scaleX = videoWidth / cropW;
+        const scaleY = videoHeight / cropH;
+        const scale = Math.max(scaleX, scaleY);
+        scaleList.push(scale);
+      }
+
+      // --- 5. Compute median of all collected crop values ---
+      const median = (arr: number[]): number => {
+        if (arr.length === 0) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 !== 0
+          ? sorted[mid]
+          : (sorted[mid - 1] + sorted[mid]) / 2;
+      };
+
+      onProgress?.(82, "Computing optimal fixed camera position...");
+
+      let posX = 0;
+      let posY = 0;
+      let scale = 1;
+
+      if (cropXList.length > 0) {
+        const medCropX = median(cropXList);
+        const medCropY = median(cropYList);
+        const medCropW = median(cropWList);
+        const medCropH = median(cropHList);
+
+        const dx = videoWidth / 2 - (medCropX + medCropW / 2);
+        const dy = videoHeight / 2 - (medCropY + medCropH / 2);
+        scale = median(scaleList);
+        const factor = baseScale * scale;
+        posX = dx * factor;
+        posY = dy * factor;
+      }
+      // If no faces were ever detected → keep default (scale 1, center)
+
+      // --- 6. Apply a single static keyframe set (no animation) ---
+      onProgress?.(95, "Applying fixed camera position...");
+
+      const staticTime = 0; // Always clip-local time 0
+      const kfId = () => Math.random().toString(36).substring(2, 9);
+
+      const timelineKeyframes = [
+        { id: `kf-posx-${kfId()}`, time: staticTime, property: "position.x", value: posX, easing: "linear" as const },
+        { id: `kf-posy-${kfId()}`, time: staticTime, property: "position.y", value: posY, easing: "linear" as const },
+        { id: `kf-scalex-${kfId()}`, time: staticTime, property: "scale.x", value: scale, easing: "linear" as const },
+        { id: `kf-scaley-${kfId()}`, time: staticTime, property: "scale.y", value: scale, easing: "linear" as const },
+      ];
+
+      store.updateClipKeyframes(clip.id, timelineKeyframes);
+
+      onProgress?.(100, "Fixed camera position applied!");
+
+      return {
+        keyframes: [],        // empty — we handled them ourselves
+        outputWidth: projectWidth,
+        outputHeight: projectHeight,
+        success: true,
+        message: cropXList.length > 0
+          ? `Fixed camera on face (${cropXList.length} samples)`
+          : "No face detected — kept default position",
+      };
+    } finally {
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+    }
   }
 }
 

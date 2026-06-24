@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { BackgroundTaskIndicator } from "./components/editor/BackgroundTaskIndicator";
 import { ToastContainer } from "./components/Toast";
 import { ScriptViewDialog } from "./components/editor/ScriptViewDialog";
 import { SearchModal } from "./components/editor/SearchModal";
@@ -145,6 +146,7 @@ function App() {
             <EditorInterface />
           </Suspense>
         )}
+        <BackgroundTaskIndicator />
         <ToastContainer />
         <ScriptViewDialog
           isOpen={activeModal === "scriptView"}

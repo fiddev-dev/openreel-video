@@ -181,11 +181,16 @@ export class WordHighlightRenderer {
         const scaleY = seg.scale * (seg.scaleY ?? 1);
         ctx.scale(scaleX, scaleY);
         
-        if (style?.shadowColor && style?.shadowBlur !== undefined && style.shadowBlur > 0) {
-          ctx.shadowColor = style.shadowColor;
-          ctx.shadowBlur = style.shadowBlur;
-          ctx.shadowOffsetX = style.shadowOffsetX ?? 0;
-          ctx.shadowOffsetY = style.shadowOffsetY ?? 0;
+        const shadowColor = seg.shadowColor !== undefined ? seg.shadowColor : style?.shadowColor;
+        const shadowBlur = seg.shadowBlur !== undefined ? seg.shadowBlur : style?.shadowBlur;
+        const shadowOffsetX = seg.shadowOffsetX !== undefined ? seg.shadowOffsetX : (style?.shadowOffsetX ?? 0);
+        const shadowOffsetY = seg.shadowOffsetY !== undefined ? seg.shadowOffsetY : (style?.shadowOffsetY ?? 0);
+
+        if (shadowColor && shadowBlur !== undefined && shadowBlur > 0) {
+          ctx.shadowColor = shadowColor;
+          ctx.shadowBlur = shadowBlur;
+          ctx.shadowOffsetX = shadowOffsetX;
+          ctx.shadowOffsetY = shadowOffsetY;
         }
 
         if (seg.style === "active" && style?.showWordBackground) {

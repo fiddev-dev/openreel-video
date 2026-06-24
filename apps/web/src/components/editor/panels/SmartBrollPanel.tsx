@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Sparkles, Loader2, Play, Plus, Volume2, VolumeX } from "lucide-react";
+import { Sparkles, Loader2, Play, Plus, Volume2, VolumeX, X } from "lucide-react";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
 import { toast } from "../../../stores/notification-store";
@@ -9,6 +9,7 @@ import {
   type Subtitle,
 } from "@openreel/core";
 import { OPENREEL_TRANSCRIBE_URL } from "../../../config/api-endpoints";
+import { useBackgroundTaskStore } from "../../../stores/background-task-store";
 
 interface SmartBrollPanelProps {
   clipId: string;
@@ -31,7 +32,7 @@ interface PexelsVideo {
 // Module-level cache to store B-Roll concepts per clipId to survive unmounts/selection changes
 const conceptsCache = new Map<string, BrollConcept[]>();
 
-export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
+export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = React.memo(({ clipId }) => {
   const clipIdRef = useRef(clipId);
   useEffect(() => {
     clipIdRef.current = clipId;
@@ -59,6 +60,15 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
   const [insertingId, setInsertingId] = useState<number | null>(null);
   const [isApplyingAll, setIsApplyingAll] = useState(false);
   const [applyProgress, setApplyProgress] = useState("");
+
+  // Abort controller ref for cancellation
+  const abortRef = useRef<AbortController | null>(null);
+
+  const addTask = useBackgroundTaskStore((s) => s.addTask);
+  const updateTask = useBackgroundTaskStore((s) => s.updateTask);
+  const completeTask = useBackgroundTaskStore((s) => s.completeTask);
+  const failTask = useBackgroundTaskStore((s) => s.failTask);
+  const cancelTask = useBackgroundTaskStore((s) => s.cancelTask);
 
   const [geminiApiKey, setGeminiApiKey] = useState(
     () => localStorage.getItem("openreel:gemini_api_key") || ""
@@ -115,6 +125,18 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
       return;
     }
 
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
+    const taskId = addTask({
+      id: `smart-broll-${clipId}`,
+      name: "AI Smart B-Roll Scan",
+      description: "Analyzing transcript & searching Pexels stock videos",
+      progress: 0,
+      message: "Initializing...",
+      cancel: () => abortController.abort(),
+    });
+
     setIsScanning(true);
     setError(null);
     setConcepts([]);
@@ -122,6 +144,7 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
     try {
       // 1. Get clip subtitles
       setPhase("Retrieving subtitles...");
+      updateTask(taskId, { progress: 5, message: "Retrieving subtitles..." });
       const captionsTrack = project.timeline.tracks.find(
         (t) => t.type === "text" && t.name === "Captions"
       );
@@ -160,7 +183,12 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
         finalSubtitles = await transcriptionService.transcribeClip(
           clip,
           mediaItem,
-          (p) => setPhase(`${p.message} (${p.progress}%)`)
+          (p) => {
+            if (abortController.signal.aborted) return;
+            const msg = `${p.message} (${p.progress}%)`;
+            setPhase(msg);
+            updateTask(taskId, { progress: Math.round(p.progress * 0.3), message: msg });
+          }
         );
       }
 
@@ -178,7 +206,9 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
         .join("\n");
 
       // 3. Ask Gemini for visual B-Roll concepts
-      setPhase("Analyzing concepts with Gemini 3.1 Flash Lite...");
+      const geminiMsg = "Analyzing concepts with Gemini 3.1 Flash Lite...";
+      setPhase(geminiMsg);
+      updateTask(taskId, { progress: 35, message: geminiMsg });
 
       let densityGuideline = "";
       if (density === "low") {
@@ -268,11 +298,18 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
 
       // 4. Query Pexels Video API for each concept
       setPhase("Searching Pexels Stock Library...");
+      updateTask(taskId, { progress: 60, message: "Searching Pexels Stock Library..." });
       const finalConcepts: BrollConcept[] = [];
 
       for (let i = 0; i < parsedConcepts.length; i++) {
+        if (abortController.signal.aborted) break;
         const c = parsedConcepts[i];
-        setPhase(`Searching Pexels for "${c.query}" (${i + 1}/${parsedConcepts.length})...`);
+        const pexMsg = `Searching Pexels for "${c.query}" (${i + 1}/${parsedConcepts.length})...`;
+        setPhase(pexMsg);
+        updateTask(taskId, {
+          progress: 60 + Math.round((i / parsedConcepts.length) * 38),
+          message: pexMsg,
+        });
 
         try {
           const pexResponse = await fetch(
@@ -310,11 +347,22 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
       }
 
       setConcepts(finalConcepts);
+      completeTask(taskId);
+      if (!abortController.signal.aborted) {
+        toast.success("B-Roll Scan Complete", `Found ${finalConcepts.length} B-Roll concepts`);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "B-Roll Scan failed");
+      if ((err as Error)?.name === "AbortError" || abortRef.current?.signal.aborted) {
+        cancelTask(taskId);
+      } else {
+        const errMsg = err instanceof Error ? err.message : "B-Roll Scan failed";
+        failTask(taskId, errMsg);
+        setError(errMsg);
+      }
     } finally {
       setIsScanning(false);
       setPhase("");
+      abortRef.current = null;
     }
   };
 
@@ -613,7 +661,14 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
           {isScanning ? (
             <>
               <Loader2 size={14} className="animate-spin" />
-              {phase}
+              <span className="truncate max-w-[160px]">{phase || "Scanning..."}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); abortRef.current?.abort(); }}
+                className="ml-auto p-0.5 hover:text-red-300 rounded"
+                title="Cancel"
+              >
+                <X size={11} />
+              </button>
             </>
           ) : (
             <>
@@ -746,6 +801,8 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
       )}
     </div>
   );
-};
+});
+
+SmartBrollPanel.displayName = "SmartBrollPanel";
 
 export default SmartBrollPanel;
