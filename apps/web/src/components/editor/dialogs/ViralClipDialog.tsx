@@ -20,7 +20,7 @@ import { useTimelineStore } from "../../../stores/timeline-store";
 import { loadMediaBlob } from "../../../services/media-storage";
 import { loadAudioBuffer } from "../../../utils/load-audio-buffer";
 import { toast } from "../../../stores/notification-store";
-import type { TranscriptWord } from "@openreel/core";
+import type { TranscriptWord, Subtitle } from "@openreel/core";
 
 export const ViralClipDialog: React.FC = () => {
   const {
@@ -62,7 +62,22 @@ export const ViralClipDialog: React.FC = () => {
     const mainClip = clips[0];
 
     // 2. Extract transcript words from subtitles
-    const subtitles = project.timeline.subtitles || [];
+    const captionsTrack = project.timeline.tracks.find(
+      (t) => t.type === "text" && t.name === "Captions"
+    );
+    const allTextClips = useProjectStore.getState().getAllTextClips();
+    const subtitles = captionsTrack
+      ? allTextClips
+          .filter((tc) => tc.trackId === captionsTrack.id)
+          .map((tc) => ({
+            id: tc.id,
+            text: tc.text,
+            startTime: tc.startTime,
+            endTime: tc.startTime + tc.duration,
+            words: (tc.metadata?.words as any) || [],
+          }))
+      : [];
+
     if (subtitles.length === 0) {
       toast.error(
         "Subtitles Required",
@@ -72,8 +87,8 @@ export const ViralClipDialog: React.FC = () => {
     }
 
     const transcriptWords: TranscriptWord[] = subtitles
-      .flatMap((sub) =>
-        (sub.words || []).map((w) => ({
+      .flatMap((sub: Subtitle) =>
+        (sub.words || []).map((w: any) => ({
           text: w.text,
           start: w.startTime,
           end: w.endTime,

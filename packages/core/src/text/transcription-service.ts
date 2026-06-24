@@ -37,9 +37,9 @@ export interface TranscriptionConfig {
 
 const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   fontFamily: "Arial",
-  fontSize: 24,
+  fontSize: 38,
   color: "#ffffff",
-  backgroundColor: "rgba(0, 0, 0, 0.7)",
+  backgroundColor: "transparent",
   position: "bottom",
 };
 
@@ -60,6 +60,17 @@ export class TranscriptionService {
     mediaItem: MediaItem,
     onProgress?: (progress: WhisperTranscriptionProgress) => void,
   ): Promise<Subtitle[]> {
+    const cacheKey = `${clip.id}_${this.config.language || "auto"}_${this.config.targetLanguage || "none"}`;
+    const cached = transcriptCache.get(cacheKey);
+    if (cached) {
+      onProgress?.({
+        phase: "complete",
+        progress: 100,
+        message: `Loaded ${cached.length} subtitles from cache`,
+      });
+      return cached;
+    }
+
     try {
       onProgress?.({
         phase: "extracting",
@@ -84,6 +95,8 @@ export class TranscriptionService {
       });
 
       const subtitles = this.convertToSubtitles(whisperResponse, clip);
+
+      transcriptCache.set(cacheKey, subtitles);
 
       onProgress?.({
         phase: "complete",
@@ -325,7 +338,7 @@ export class TranscriptionService {
     clipStartTime: number,
   ): Subtitle[] {
     const subtitles: Subtitle[] = [];
-    const maxWords = this.config.maxWordsPerSegment || 10;
+    const maxWords = 5;
     const maxDuration = this.config.maxSegmentDuration || 5;
 
     let currentWords: CloudflareWhisperWord[] = [];
@@ -372,10 +385,15 @@ export class TranscriptionService {
     words: CloudflareWhisperWord[],
     clipStartTime: number,
   ): Subtitle {
-    const text = words
-      .map((w) => w.word)
-      .join(" ")
-      .trim();
+    let text = "";
+    if (words.length <= 3) {
+      text = words.map((w) => w.word).join(" ");
+    } else {
+      const line1 = words.slice(0, 3).map((w) => w.word).join(" ");
+      const line2 = words.slice(3).map((w) => w.word).join(" ");
+      text = `${line1}\n${line2}`;
+    }
+    text = text.trim();
     const startTime = clipStartTime + words[0].start;
     const endTime = clipStartTime + words[words.length - 1].end;
 
@@ -405,6 +423,8 @@ export class TranscriptionService {
     }
   }
 }
+
+export const transcriptCache = new Map<string, Subtitle[]>();
 
 let transcriptionServiceInstance: TranscriptionService | null = null;
 

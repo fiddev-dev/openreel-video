@@ -1302,10 +1302,10 @@ export class VideoEngine {
 
     ctx.save();
 
-    const fontSize = style?.fontSize || 24;
+    const fontSize = style?.fontSize || 38;
     const fontFamily = style?.fontFamily || "Inter";
     const color = style?.color || "#ffffff";
-    const backgroundColor = style?.backgroundColor || "rgba(0, 0, 0, 0.7)";
+    const backgroundColor = style?.backgroundColor;
     const position = style?.position || "bottom";
 
     ctx.font = `bold ${fontSize}px "${fontFamily}"`;
@@ -1334,13 +1334,15 @@ export class VideoEngine {
       const bgWidth = metrics.width + 20;
       const bgHeight = lineHeight;
 
-      ctx.fillStyle = backgroundColor;
-      ctx.fillRect(
-        canvasWidth / 2 - bgWidth / 2,
-        y - bgHeight / 2,
-        bgWidth,
-        bgHeight,
-      );
+      if (backgroundColor && backgroundColor !== "transparent" && backgroundColor !== "rgba(0,0,0,0)" && backgroundColor !== "rgba(0, 0, 0, 0)") {
+        ctx.fillStyle = backgroundColor;
+        ctx.fillRect(
+          canvasWidth / 2 - bgWidth / 2,
+          y - bgHeight / 2,
+          bgWidth,
+          bgHeight,
+        );
+      }
 
       ctx.fillStyle = color;
       ctx.fillText(line, canvasWidth / 2, y);

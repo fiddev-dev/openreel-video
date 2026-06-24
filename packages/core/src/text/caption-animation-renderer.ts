@@ -9,6 +9,10 @@ export interface WordSegment {
   readonly scale: number;
   readonly offsetY: number;
   readonly color?: string;
+  readonly rotation?: number;
+  readonly offsetX?: number;
+  readonly scaleX?: number;
+  readonly scaleY?: number;
 }
 
 export interface AnimatedCaptionFrame {
@@ -20,19 +24,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function easeOutBounce(t: number): number {
-  const n1 = 7.5625;
-  const d1 = 2.75;
-  if (t < 1 / d1) {
-    return n1 * t * t;
-  } else if (t < 2 / d1) {
-    return n1 * (t -= 1.5 / d1) * t + 0.75;
-  } else if (t < 2.5 / d1) {
-    return n1 * (t -= 2.25 / d1) * t + 0.9375;
-  } else {
-    return n1 * (t -= 2.625 / d1) * t + 0.984375;
-  }
-}
 
 function renderNone(subtitle: Subtitle): AnimatedCaptionFrame {
   return {
@@ -188,34 +179,33 @@ function renderBounce(
     return renderNone(subtitle);
   }
 
-  const animationDuration = 0.3;
-
   const segments: WordSegment[] = subtitle.words.map((word) => {
     const timeSinceStart = currentTime - word.startTime;
-    const isVisible = currentTime >= word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
 
-    if (!isVisible) {
+    if (isUpcoming || isPast) {
       return {
         text: word.text,
-        style: "hidden" as WordSegmentStyle,
-        opacity: 0,
-        scale: 0,
-        offsetY: 20,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
       };
     }
 
-    const animProgress = clamp(timeSinceStart / animationDuration, 0, 1);
-    const bounceProgress = easeOutBounce(animProgress);
-
-    const isActive =
-      currentTime >= word.startTime && currentTime < word.endTime;
+    const wordDuration = word.endTime - word.startTime;
+    const animProgress = clamp(timeSinceStart / wordDuration, 0, 1);
+    // Smooth ease-out enlargement (no bounce, no vertical shift)
+    const easeProgress = 1 - Math.pow(1 - animProgress, 3);
+    const scale = 1.0 + easeProgress * 0.2;
 
     return {
       text: word.text,
-      style: isActive ? "active" : "normal",
-      opacity: bounceProgress,
-      scale: 0.5 + bounceProgress * 0.5,
-      offsetY: 20 * (1 - bounceProgress),
+      style: "active",
+      opacity: 1,
+      scale: scale,
+      offsetY: 0,
     };
   });
 
@@ -230,7 +220,28 @@ function renderTypewriter(
     return renderNone(subtitle);
   }
 
-  const visibleWords = subtitle.words.filter(
+  // Find the index of the word currently being spoken
+  let activeIndex = subtitle.words.findIndex(
+    (w) => currentTime >= w.startTime && currentTime < w.endTime,
+  );
+  if (activeIndex === -1) {
+    // Fallback: Find the last word that has started speaking
+    activeIndex = subtitle.words.reduce(
+      (maxIdx, w, idx) => (currentTime >= w.startTime ? idx : maxIdx),
+      -1,
+    );
+  }
+
+  if (activeIndex === -1) {
+    return { segments: [], visible: false };
+  }
+
+  // Group words into pages of maximum 3 words
+  const pageIndex = Math.floor(activeIndex / 3);
+  const pageWords = subtitle.words.slice(pageIndex * 3, (pageIndex + 1) * 3);
+
+  // Filter page words to only show those that have started speaking (typewriter reveal)
+  const visibleWords = pageWords.filter(
     (word) => currentTime >= word.startTime,
   );
 
@@ -264,37 +275,35 @@ function renderPopIn(
     return renderNone(subtitle);
   }
 
-  const animationDuration = 0.25;
-
   const segments: WordSegment[] = subtitle.words.map((word) => {
     const timeSinceStart = currentTime - word.startTime;
-    const isVisible = currentTime >= word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
 
-    if (!isVisible) {
+    if (isUpcoming || isPast) {
       return {
         text: word.text,
-        style: "hidden",
-        opacity: 0,
-        scale: 0,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
         offsetY: 0,
       };
     }
 
-    const animProgress = clamp(timeSinceStart / animationDuration, 0, 1);
-    // Pop-in bounce: 0 -> 1.35 -> 1.0
+    const wordDuration = word.endTime - word.startTime;
+    const animProgress = clamp(timeSinceStart / wordDuration, 0, 1);
+    // Pop-in bounce: 1.0 -> 1.35 -> 1.15
     const scale = animProgress < 0.7
-      ? (animProgress / 0.7) * 1.35
-      : 1.35 - ((animProgress - 0.7) / 0.3) * 0.35;
-
-    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
+      ? 1.0 + (animProgress / 0.7) * 0.35
+      : 1.35 - ((animProgress - 0.7) / 0.3) * 0.2;
 
     return {
       text: word.text,
-      style: isActive ? "active" : "normal",
-      opacity: clamp(timeSinceStart / 0.08, 0, 1),
+      style: "active",
+      opacity: 1,
       scale: scale,
       offsetY: 0,
-      color: isActive ? (subtitle.style?.highlightColor || "#ffff00") : undefined,
+      color: subtitle.style?.highlightColor || "#ffff00",
     };
   });
 
@@ -309,36 +318,34 @@ function renderSlideUp(
     return renderNone(subtitle);
   }
 
-  const animationDuration = 0.25;
-
   const segments: WordSegment[] = subtitle.words.map((word) => {
     const timeSinceStart = currentTime - word.startTime;
-    const isVisible = currentTime >= word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
 
-    if (!isVisible) {
+    if (isUpcoming || isPast) {
       return {
         text: word.text,
-        style: "hidden",
-        opacity: 0,
+        style: "normal",
+        opacity: 1,
         scale: 1,
-        offsetY: 15,
+        offsetY: 0,
       };
     }
 
-    const animProgress = clamp(timeSinceStart / animationDuration, 0, 1);
+    const wordDuration = word.endTime - word.startTime;
+    const animProgress = clamp(timeSinceStart / wordDuration, 0, 1);
     // Cubic ease out slide-up
     const easeProgress = 1 - Math.pow(1 - animProgress, 3);
     const offsetY = 15 * (1 - easeProgress);
 
-    const isActive = currentTime >= word.startTime && currentTime < word.endTime;
-
     return {
       text: word.text,
-      style: isActive ? "active" : "normal",
-      opacity: easeProgress,
-      scale: 1,
+      style: "active",
+      opacity: 1,
+      scale: 1.15,
       offsetY: offsetY,
-      color: isActive ? (subtitle.style?.highlightColor || "#ffff00") : undefined,
+      color: subtitle.style?.highlightColor || "#ffff00",
     };
   });
 
@@ -379,6 +386,257 @@ function renderGlowPulse(
   return { segments, visible: true };
 }
 
+function renderActiveZoomSpring(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const scale = 1 + Math.sin(progress * Math.PI) * 0.45;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: scale,
+      offsetY: 0,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderJiggleActive(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const jiggleFreq = 15;
+    const jiggleAmp = 6;
+    const rotation = Math.sin(timeSinceStart * jiggleFreq * Math.PI * 2) * jiggleAmp;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.25,
+      offsetY: 0,
+      rotation,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderBounceJump(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const jumpHeight = 16;
+    const offsetY = -Math.sin(progress * Math.PI) * jumpHeight;
+    const scaleY = 1.0 + Math.sin(progress * Math.PI * 2) * 0.15;
+    const scaleX = 1.0 - Math.sin(progress * Math.PI * 2) * 0.08;
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.15,
+      scaleX,
+      scaleY,
+      offsetY,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderSlideInRight(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const easeProgress = 1 - Math.pow(1 - progress, 3);
+    const offsetX = 35 * (1 - easeProgress);
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.2,
+      offsetY: 0,
+      offsetX,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderFadeSlideUp(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const easeProgress = 1 - Math.pow(1 - progress, 3);
+    const offsetY = 18 * (1 - easeProgress);
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.25,
+      offsetY,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
+function renderRevealLeft(
+  subtitle: Subtitle,
+  currentTime: number,
+): AnimatedCaptionFrame {
+  if (!subtitle.words || subtitle.words.length === 0) {
+    return renderNone(subtitle);
+  }
+
+  const segments: WordSegment[] = subtitle.words.map((word) => {
+    const timeSinceStart = currentTime - word.startTime;
+    const isUpcoming = currentTime < word.startTime;
+    const isPast = currentTime >= word.endTime;
+
+    if (isUpcoming || isPast) {
+      return {
+        text: word.text,
+        style: "normal",
+        opacity: 1,
+        scale: 1,
+        offsetY: 0,
+      };
+    }
+
+    const wordDuration = word.endTime - word.startTime;
+    const progress = clamp(timeSinceStart / wordDuration, 0, 1);
+    const easeProgress = 1 - Math.pow(1 - progress, 3);
+
+    return {
+      text: word.text,
+      style: "active",
+      opacity: 1,
+      scale: 1.2,
+      scaleX: easeProgress,
+      scaleY: 1,
+      offsetY: 0,
+      color: subtitle.style?.highlightColor || "#ffff00",
+    };
+  });
+
+  return { segments, visible: true };
+}
+
 export function renderAnimatedCaption(
   subtitle: Subtitle,
   currentTime: number,
@@ -387,28 +645,47 @@ export function renderAnimatedCaption(
     return { segments: [], visible: false };
   }
 
-  const animationStyle = subtitle.animationStyle || "none";
+  const normalizedSubtitle: Subtitle = {
+    ...subtitle,
+    words: subtitle.words && subtitle.words.length > 0
+      ? subtitle.words
+      : [{ text: subtitle.text, startTime: subtitle.startTime, endTime: subtitle.endTime }],
+  };
+
+  const animationStyle = normalizedSubtitle.animationStyle || "none";
 
   switch (animationStyle) {
     case "word-highlight":
-      return renderWordHighlight(subtitle, currentTime);
+      return renderWordHighlight(normalizedSubtitle, currentTime);
     case "word-by-word":
-      return renderWordByWord(subtitle, currentTime);
+      return renderWordByWord(normalizedSubtitle, currentTime);
     case "karaoke":
-      return renderKaraoke(subtitle, currentTime);
+      return renderKaraoke(normalizedSubtitle, currentTime);
     case "bounce":
-      return renderBounce(subtitle, currentTime);
+      return renderBounce(normalizedSubtitle, currentTime);
     case "typewriter":
-      return renderTypewriter(subtitle, currentTime);
+      return renderTypewriter(normalizedSubtitle, currentTime);
     case "pop-in":
-      return renderPopIn(subtitle, currentTime);
+      return renderPopIn(normalizedSubtitle, currentTime);
     case "slide-up":
-      return renderSlideUp(subtitle, currentTime);
+      return renderSlideUp(normalizedSubtitle, currentTime);
     case "glow-pulse":
-      return renderGlowPulse(subtitle, currentTime);
+      return renderGlowPulse(normalizedSubtitle, currentTime);
+    case "active-zoom-spring":
+      return renderActiveZoomSpring(normalizedSubtitle, currentTime);
+    case "jiggle-active":
+      return renderJiggleActive(normalizedSubtitle, currentTime);
+    case "bounce-jump":
+      return renderBounceJump(normalizedSubtitle, currentTime);
+    case "slide-in-right":
+      return renderSlideInRight(normalizedSubtitle, currentTime);
+    case "fade-slide-up":
+      return renderFadeSlideUp(normalizedSubtitle, currentTime);
+    case "reveal-left":
+      return renderRevealLeft(normalizedSubtitle, currentTime);
     case "none":
     default:
-      return renderNone(subtitle);
+      return renderNone(normalizedSubtitle);
   }
 }
 
@@ -425,6 +702,12 @@ export function getAnimationStyleDisplayName(
     "pop-in": "Pop In (Zoom)",
     "slide-up": "Slide Up",
     "glow-pulse": "Glow Pulse",
+    "active-zoom-spring": "Bouncy Spring Zoom (CapCut)",
+    "jiggle-active": "Jiggle Active (CapCut)",
+    "bounce-jump": "Bounce Jump (CapCut)",
+    "slide-in-right": "Slide In Right (CapCut)",
+    "fade-slide-up": "Fade Slide Up (CapCut)",
+    "reveal-left": "Reveal Left (CapCut)",
   };
   return names[style];
 }
@@ -439,4 +722,10 @@ export const CAPTION_ANIMATION_STYLES: CaptionAnimationStyle[] = [
   "pop-in",
   "slide-up",
   "glow-pulse",
+  "active-zoom-spring",
+  "jiggle-active",
+  "bounce-jump",
+  "slide-in-right",
+  "fade-slide-up",
+  "reveal-left",
 ];

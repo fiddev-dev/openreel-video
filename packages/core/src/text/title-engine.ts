@@ -9,6 +9,8 @@ import type {
 } from "./types";
 import { DEFAULT_TEXT_STYLE, DEFAULT_TEXT_TRANSFORM } from "./types";
 import { textAnimationEngine } from "./text-animation";
+import { WordHighlightRenderer } from "./word-highlight-renderer";
+import type { Subtitle, CaptionAnimationStyle } from "../types/timeline";
 
 export interface CreateTextClipOptions {
   id?: string;
@@ -225,6 +227,48 @@ export class TitleEngine {
       | OffscreenCanvasRenderingContext2D;
 
     ctx.clearRect(0, 0, width, height);
+
+    const isSubtitle =
+      clip.metadata?.words ||
+      clip.metadata?.animationStyle ||
+      clip.trackId === "Captions";
+
+    if (isSubtitle) {
+      const subtitle: Subtitle = {
+        id: clip.id,
+        text: clip.text,
+        startTime: clip.startTime,
+        endTime: clip.startTime + clip.duration,
+        words: clip.metadata?.words as any[],
+        animationStyle: clip.metadata?.animationStyle as CaptionAnimationStyle | undefined,
+        style: {
+          fontFamily: clip.style.fontFamily,
+          fontSize: clip.style.fontSize,
+          color: clip.style.color,
+          backgroundColor: clip.style.backgroundColor || "transparent",
+          position: (clip.style.verticalAlign === "top" ? "top" : clip.style.verticalAlign === "middle" ? "center" : "bottom") as "top" | "center" | "bottom",
+          outlineColor: (clip.style as any).outlineColor || clip.style.strokeColor,
+          outlineWidth: (clip.style as any).outlineWidth !== undefined ? (clip.style as any).outlineWidth : clip.style.strokeWidth,
+          shadowColor: clip.style.shadowColor,
+          shadowBlur: clip.style.shadowBlur,
+          shadowOffsetX: clip.style.shadowOffsetX,
+          shadowOffsetY: clip.style.shadowOffsetY,
+          showWordBackground: (clip.metadata?.showWordBackground ?? (clip.style as any).showWordBackground) as boolean | undefined,
+          wordBackgroundColor: (clip.metadata?.wordBackgroundColor ?? (clip.style as any).wordBackgroundColor) as string | undefined,
+          highlightColor: (clip.metadata?.highlightColor ?? (clip.style as any).highlightColor) as string | undefined,
+          upcomingColor: (clip.metadata?.upcomingColor ?? (clip.style as any).upcomingColor) as string | undefined,
+        },
+      };
+
+      WordHighlightRenderer.render(ctx, subtitle, clip.startTime + time, width, height);
+
+      return {
+        canvas,
+        width,
+        height,
+        textMetrics: this.measureText(clip.text, clip.style, width),
+      };
+    }
 
     const animatedState = textAnimationEngine.getAnimatedState(clip, time);
     let { opacity, transform, style, visibleText, characterStates } =

@@ -1,8 +1,14 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Sparkles, Loader2, Play, Plus, Volume2, VolumeX } from "lucide-react";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
 import { toast } from "../../../stores/notification-store";
+import {
+  getTranscriptionService,
+  initializeTranscriptionService,
+  type Subtitle,
+} from "@openreel/core";
+import { OPENREEL_TRANSCRIBE_URL } from "../../../config/api-endpoints";
 
 interface SmartBrollPanelProps {
   clipId: string;
@@ -22,12 +28,37 @@ interface PexelsVideo {
   link: string;
 }
 
+// Module-level cache to store B-Roll concepts per clipId to survive unmounts/selection changes
+const conceptsCache = new Map<string, BrollConcept[]>();
+
 export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
-  const [concepts, setConcepts] = useState<BrollConcept[]>([]);
+  const clipIdRef = useRef(clipId);
+  useEffect(() => {
+    clipIdRef.current = clipId;
+  }, [clipId]);
+
+  const [concepts, setConceptsInternal] = useState<BrollConcept[]>(() => {
+    return conceptsCache.get(clipId) || [];
+  });
+
+  const setConcepts = useCallback((newVal: BrollConcept[] | ((prev: BrollConcept[]) => BrollConcept[])) => {
+    setConceptsInternal((prev) => {
+      const next = typeof newVal === "function" ? newVal(prev) : newVal;
+      conceptsCache.set(clipIdRef.current, next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setConceptsInternal(conceptsCache.get(clipId) || []);
+  }, [clipId]);
+
   const [isScanning, setIsScanning] = useState(false);
   const [phase, setPhase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [insertingId, setInsertingId] = useState<number | null>(null);
+  const [isApplyingAll, setIsApplyingAll] = useState(false);
+  const [applyProgress, setApplyProgress] = useState("");
 
   const [geminiApiKey, setGeminiApiKey] = useState(
     () => localStorage.getItem("openreel:gemini_api_key") || ""
@@ -35,8 +66,12 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
   const [pexelsApiKey, setPexelsApiKey] = useState(
     () => localStorage.getItem("openreel:pexels_api_key") || ""
   );
+  const [density, setDensity] = useState<"low" | "medium" | "high">(
+    () => (localStorage.getItem("openreel:broll_density") as any) || "medium"
+  );
 
   const project = useProjectStore((s) => s.project);
+  const getMediaItem = useProjectStore((s) => s.getMediaItem);
   const setPlayheadPosition = useTimelineStore((s) => s.setPlayheadPosition);
 
   // Helper to get selected clip from timeline
@@ -87,25 +122,57 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
     try {
       // 1. Get clip subtitles
       setPhase("Retrieving subtitles...");
-      const clipSubtitles = (project.timeline.subtitles || [])
+      const captionsTrack = project.timeline.tracks.find(
+        (t) => t.type === "text" && t.name === "Captions"
+      );
+      const allTextClips = useProjectStore.getState().getAllTextClips();
+      const allSubtitles: Subtitle[] = captionsTrack
+        ? allTextClips
+            .filter((tc) => tc.trackId === captionsTrack.id)
+            .map((tc) => ({
+              id: tc.id,
+              text: tc.text,
+              startTime: tc.startTime,
+              endTime: tc.startTime + tc.duration,
+              words: (tc.metadata?.words as any) || [],
+            }))
+        : [];
+
+      const clipSubtitles = allSubtitles
         .filter(
-          (sub) =>
-            sub.startTime >= clip.startTime &&
-            sub.endTime <= clip.startTime + clip.duration
+          (sub: Subtitle) =>
+            sub.startTime < clip.startTime + clip.duration - 0.05 &&
+            sub.endTime > clip.startTime + 0.05
         )
         .sort((a, b) => a.startTime - b.startTime);
 
-      if (clipSubtitles.length === 0) {
-        throw new Error(
-          "No subtitles found for this clip. Please generate auto-captions first."
+      let finalSubtitles = clipSubtitles;
+      if (finalSubtitles.length === 0) {
+        setPhase("Transcribing audio for B-Roll...");
+        const transcriptionService = getTranscriptionService() || initializeTranscriptionService({
+          apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
+        });
+        const mediaItem = getMediaItem(clip.mediaId);
+        if (!mediaItem?.blob) {
+          throw new Error("Media source file not found or not loaded");
+        }
+        
+        finalSubtitles = await transcriptionService.transcribeClip(
+          clip,
+          mediaItem,
+          (p) => setPhase(`${p.message} (${p.progress}%)`)
         );
       }
 
+      if (finalSubtitles.length === 0) {
+        throw new Error("No transcript generated. Ensure the video contains audio.");
+      }
+
       // 2. Format subtitles for Gemini
-      const formattedTranscript = clipSubtitles
-        .map((sub) => {
-          const startRel = sub.startTime - clip.startTime + clip.inPoint;
-          const endRel = sub.endTime - clip.startTime + clip.inPoint;
+      const formattedTranscript = finalSubtitles
+        .map((sub: Subtitle) => {
+          const startRel = Math.max(clip.inPoint, sub.startTime - clip.startTime + clip.inPoint);
+          const endRel = Math.min(clip.inPoint + clip.duration, sub.endTime - clip.startTime + clip.inPoint);
           return `[${startRel.toFixed(1)}s - ${endRel.toFixed(1)}s]: "${sub.text}"`;
         })
         .join("\n");
@@ -113,9 +180,22 @@ export const SmartBrollPanel: React.FC<SmartBrollPanelProps> = ({ clipId }) => {
       // 3. Ask Gemini for visual B-Roll concepts
       setPhase("Analyzing concepts with Gemini 3.1 Flash Lite...");
 
+      let densityGuideline = "";
+      if (density === "low") {
+        densityGuideline = "Suggest B-roll concepts extremely sparingly (covers about 20-30% of total video duration). Only suggest B-roll for highly concrete visual actions or objects mentioned in the transcript. Keep significant gaps (several seconds) between B-roll clips so the original speaker (talking head) is visible for the majority of the video.";
+      } else if (density === "medium") {
+        densityGuideline = "Suggest B-roll concepts selectively (covers about 45-55% of total video duration). Balance B-roll overlays with original speaker footage. Only suggest B-roll for key visual points, ensuring there are clear gaps where no B-roll is recommended so the original talking head is displayed.";
+      } else {
+        densityGuideline = "Suggest B-roll concepts frequently (covers about 75-85% of total video duration). Cover most topics or abstract concepts with relevant overlays, with only brief moments showing the original speaker.";
+      }
+
       const prompt = `You are a professional video editor and B-Roll coordinator.
 Analyze the following video transcript segments (which are 0-indexed relative to the video file starting at 0.0 seconds).
-For each key topic or visual shift in the transcript, suggest a specific B-Roll stock footage concept.
+
+Pacing and Density Guidelines:
+${densityGuideline}
+
+Identify key moments that would benefit significantly from visual overlays based on the guideline above. For each recommended B-Roll segment, suggest a stock footage concept.
 Each concept must have:
 1. A search query (1-3 words) to query a stock video engine (e.g. "aerial view forest", "man typing laptop", "coffee pouring"). Make it highly descriptive but simple.
 2. The start time (in seconds, matching the transcript timestamps) where this visual B-Roll segment should begin.
@@ -168,12 +248,20 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
         throw new Error("Empty response from Gemini API");
       }
 
-      const cleanedText = textResponse
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
+      const startIndex = textResponse.indexOf("[");
+      const endIndex = textResponse.lastIndexOf("]");
+      
+      let jsonText = textResponse;
+      if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
+        jsonText = textResponse.substring(startIndex, endIndex + 1);
+      } else {
+        jsonText = textResponse
+          .replace(/```json/g, "")
+          .replace(/```/g, "")
+          .trim();
+      }
 
-      const parsedConcepts: BrollConcept[] = JSON.parse(cleanedText);
+      const parsedConcepts: BrollConcept[] = JSON.parse(jsonText);
       if (!Array.isArray(parsedConcepts)) {
         throw new Error("Gemini response is not a valid JSON array");
       }
@@ -336,6 +424,121 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
     }
   };
 
+  const handleAutoApplyAll = async () => {
+    if (!project || !clip) return;
+    const validConcepts = concepts.filter((c) => c.videos && c.videos.length > 0);
+    if (validConcepts.length === 0) {
+      toast.error("No Videos Found", "There are no suggested videos to apply.");
+      return;
+    }
+
+    setIsApplyingAll(true);
+    setError(null);
+
+    try {
+      const store = useProjectStore.getState();
+
+      // 1. Ensure B-Roll track exists first
+      let targetTrack = project.timeline.tracks.find(
+        (t) => t.type === "video" && t.name === "B-Roll"
+      );
+
+      if (!targetTrack) {
+        setApplyProgress("Creating B-Roll track...");
+        const oldTracks = [...project.timeline.tracks];
+        const addTrackRes = await store.addTrack("video");
+        if (!addTrackRes.success) {
+          throw new Error("Failed to create B-Roll overlay track");
+        }
+        const updatedProject = useProjectStore.getState().project;
+        const newTrack = updatedProject.timeline.tracks.find(
+          (t) => !oldTracks.some((ot) => ot.id === t.id)
+        );
+        if (!newTrack) {
+          throw new Error("Failed to register new video track");
+        }
+        store.renameTrack(newTrack.id, "B-Roll");
+        targetTrack = { ...newTrack, name: "B-Roll" };
+      }
+
+      // 2. Loop through each concept and apply it
+      for (let i = 0; i < validConcepts.length; i++) {
+        const concept = validConcepts[i];
+        const video = concept.videos![0]; // Pick the first video suggestion
+        setApplyProgress(`Applying B-Roll ${i + 1}/${validConcepts.length}: "${concept.query}"...`);
+
+        // Fetch stock video URL as a blob
+        const res = await fetch(video.link);
+        if (!res.ok) {
+          console.warn(`Failed to download video for concept "${concept.query}"`);
+          continue;
+        }
+        const blob = await res.blob();
+        const file = new File([blob], `broll-${video.id}.mp4`, {
+          type: "video/mp4",
+        });
+
+        // Import into project media library
+        const importRes = await store.importMedia(file);
+        if (!importRes.success || !importRes.actionId) {
+          console.warn(`Failed to import video for concept "${concept.query}"`);
+          continue;
+        }
+        const newMediaId = importRes.actionId;
+
+        // Calculate start time relative to global timeline
+        const timelineStartTime = clip.startTime + (concept.startTime - clip.inPoint);
+
+        // Add clip to the track
+        const addClipRes = await store.addClip(targetTrack.id, newMediaId, timelineStartTime);
+        if (!addClipRes.success) {
+          console.warn(`Failed to add clip for concept "${concept.query}"`);
+          continue;
+        }
+
+        // Retrieve clip to trim and mute
+        const currentProject = useProjectStore.getState().project;
+        const trackAfterAdd = currentProject.timeline.tracks.find(
+          (t) => t.id === targetTrack!.id
+        );
+        const newClip = trackAfterAdd?.clips.find(
+          (c) => c.mediaId === newMediaId && Math.abs(c.startTime - timelineStartTime) < 0.01
+        );
+
+        if (!newClip) continue;
+
+        // Trim
+        const conceptDuration = concept.endTime - concept.startTime;
+        const trimRes = await store.trimClip(newClip.id, 0, conceptDuration);
+        if (!trimRes.success) continue;
+
+        // Mute
+        const muteAction = {
+          type: "audio/setVolume" as const,
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          params: { clipId: newClip.id, volume: 0 },
+        };
+        await store.actionExecutor.execute(muteAction, currentProject);
+      }
+
+      // Update UI state
+      useProjectStore.setState({
+        project: {
+          ...useProjectStore.getState().project,
+          modifiedAt: Date.now(),
+        },
+      });
+
+      toast.success("B-Roll Completed", `Successfully inserted ${validConcepts.length} stock video overlays`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Auto-applying B-Roll failed");
+    } finally {
+      setIsApplyingAll(false);
+      setApplyProgress("");
+    }
+  };
+
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -382,13 +585,29 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
             className="w-full px-2 py-1 text-[10px] bg-background-secondary border border-border rounded text-text-primary placeholder:text-text-muted"
           />
         </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-text-secondary block">B-Roll Density</label>
+          <select
+            value={density}
+            onChange={(e) => {
+              const val = e.target.value as any;
+              setDensity(val);
+              localStorage.setItem("openreel:broll_density", val);
+            }}
+            className="w-full px-2 py-1 text-[10px] bg-background-secondary border border-border rounded text-text-primary focus:outline-none focus:border-primary"
+          >
+            <option value="low">Low (Sparse - original video visible, ~25% coverage)</option>
+            <option value="medium">Medium (Balanced - mix original & B-roll, ~50% coverage)</option>
+            <option value="high">High (Frequent - cover most topics, ~80% coverage)</option>
+          </select>
+        </div>
       </div>
 
       {/* Control Buttons */}
       <div className="space-y-2">
         <button
           onClick={handleScan}
-          disabled={isScanning}
+          disabled={isScanning || isApplyingAll}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-primary hover:bg-primary/90 text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50"
         >
           {isScanning ? (
@@ -403,6 +622,26 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
             </>
           )}
         </button>
+
+        {concepts.length > 0 && (
+          <button
+            onClick={handleAutoApplyAll}
+            disabled={isApplyingAll || isScanning}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50"
+          >
+            {isApplyingAll ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                {applyProgress}
+              </>
+            ) : (
+              <>
+                <Plus size={14} />
+                Auto-Apply All B-Rolls
+              </>
+            )}
+          </button>
+        )}
 
         {error && (
           <p className="text-[10px] text-red-400 bg-red-500/10 p-2 rounded">{error}</p>

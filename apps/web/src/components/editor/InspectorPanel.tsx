@@ -10,6 +10,7 @@ import {
   initializeTranscriptionService,
   type WhisperTranscriptionProgress,
   type CaptionAnimationStyle,
+  type Subtitle,
   CAPTION_ANIMATION_STYLES,
   getAnimationStyleDisplayName,
   WordHighlightRenderer,
@@ -214,10 +215,43 @@ export const InspectorPanel: React.FC = () => {
     return subtitleSelection?.id || null;
   }, [selectedItems]);
 
-  const selectedSubtitle = useMemo(() => {
+  const selectedSubtitle = useMemo((): Subtitle | null => {
+    if (selectedClipIds.length === 1) {
+      const clipId = selectedClipIds[0];
+      const titleEngine = getTitleEngine();
+      const textClip = titleEngine?.getTextClip(clipId);
+      if (textClip && (textClip.trackId === "Captions" || textClip.metadata?.words)) {
+        return {
+          id: textClip.id,
+          text: textClip.text,
+          startTime: textClip.startTime,
+          endTime: textClip.startTime + textClip.duration,
+          animationStyle: textClip.metadata?.animationStyle as CaptionAnimationStyle | undefined,
+          style: {
+            fontFamily: textClip.style.fontFamily,
+            fontSize: textClip.style.fontSize,
+            color: textClip.style.color,
+            backgroundColor: textClip.style.backgroundColor || "transparent",
+            position: (textClip.style.verticalAlign === "top" ? "top" : textClip.style.verticalAlign === "middle" ? "center" : "bottom") as "top" | "center" | "bottom",
+            outlineColor: (textClip.style as any).outlineColor || textClip.style.strokeColor || "#000000",
+            outlineWidth: (textClip.style as any).outlineWidth !== undefined ? (textClip.style as any).outlineWidth : (textClip.style.strokeWidth || 0),
+            shadowColor: textClip.style.shadowColor || "#000000",
+            shadowBlur: textClip.style.shadowBlur || 0,
+            shadowOffsetX: textClip.style.shadowOffsetX || 0,
+            shadowOffsetY: textClip.style.shadowOffsetY || 0,
+            showWordBackground: (textClip.metadata?.showWordBackground ?? (textClip.style as any).showWordBackground) as boolean | undefined,
+            wordBackgroundColor: (textClip.metadata?.wordBackgroundColor ?? (textClip.style as any).wordBackgroundColor) as string | undefined,
+            highlightColor: (textClip.metadata?.highlightColor ?? (textClip.style as any).highlightColor) as string | undefined,
+            upcomingColor: (textClip.metadata?.upcomingColor ?? (textClip.style as any).upcomingColor) as string | undefined,
+          },
+          words: textClip.metadata?.words as any[],
+        };
+      }
+    }
+
     if (!selectedSubtitleId) return null;
     return getSubtitle(selectedSubtitleId) || null;
-  }, [selectedSubtitleId, getSubtitle, project.timeline.subtitles]);
+  }, [selectedClipIds, selectedSubtitleId, getSubtitle, getTitleEngine, project.timeline.subtitles, project.modifiedAt]);
 
   const selectedTimelineClip = useMemo(() => {
     if (selectedClipIds.length !== 1) return null;
@@ -233,6 +267,9 @@ export const InspectorPanel: React.FC = () => {
     const titleEngine = getTitleEngine();
     const textClip = titleEngine?.getTextClip(clipId);
     if (textClip) {
+      if (textClip.trackId === "Captions" || textClip.metadata?.words) {
+        return null;
+      }
       return {
         id: textClip.id,
         mediaId: `text-${textClip.id}`,
@@ -1429,10 +1466,13 @@ export const InspectorPanel: React.FC = () => {
                         const r = parseInt(hex.slice(1, 3), 16);
                         const g = parseInt(hex.slice(3, 5), 16);
                         const b = parseInt(hex.slice(5, 7), 16);
+                        const currentBg = selectedSubtitle.style?.backgroundColor;
+                        const hasNoOpacity = !currentBg || currentBg === "transparent" || currentBg.includes(", 0)");
+                        const opacity = hasNoOpacity ? "0.7" : (currentBg.match(/,?\s*([\d.]+)\s*\)$/)?.[1] || "1");
                         updateSubtitle(selectedSubtitle.id, {
                           style: {
                             ...(selectedSubtitle.style || {}),
-                            backgroundColor: `rgba(${r}, ${g}, ${b}, 0.7)`,
+                            backgroundColor: `rgba(${r}, ${g}, ${b}, ${opacity})`,
                           } as typeof selectedSubtitle.style,
                         });
                       }}
@@ -1444,12 +1484,17 @@ export const InspectorPanel: React.FC = () => {
                           ? "0.7"
                           : selectedSubtitle.style?.backgroundColor?.includes("0.5")
                             ? "0.5"
-                            : "1"
+                            : selectedSubtitle.style?.backgroundColor?.includes(", 0)") || selectedSubtitle.style?.backgroundColor === "transparent"
+                              ? "0"
+                              : "1"
                       }
                       onValueChange={(v) => {
-                        const currentBg =
+                        let currentBg =
                           selectedSubtitle.style?.backgroundColor ||
                           "rgba(0, 0, 0, 0.7)";
+                        if (currentBg === "transparent") {
+                          currentBg = "rgba(0, 0, 0, 0)";
+                        }
                         const newBg = currentBg.replace(
                           /[\d.]+\)$/,
                           `${v})`,
@@ -1473,6 +1518,246 @@ export const InspectorPanel: React.FC = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+              </div>
+            </Section>
+
+            {/* Subtitle Effects (Outline, Shadow, Active Pill) */}
+            <Section title="Style Effects (Outline & Shadow)">
+              <div className="space-y-4">
+                {/* Text Outline/Stroke */}
+                <div className="space-y-2 pb-2 border-b border-border/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-text-secondary font-medium">Text Outline</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSubtitle.style?.outlineWidth !== undefined && selectedSubtitle.style.outlineWidth > 0}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          updateSubtitle(selectedSubtitle.id, {
+                            style: {
+                              ...(selectedSubtitle.style || {}),
+                              outlineWidth: enabled ? 3 : 0,
+                              outlineColor: selectedSubtitle.style?.outlineColor || "#000000",
+                            } as typeof selectedSubtitle.style,
+                          });
+                        }}
+                        className="w-3.5 h-3.5 rounded border border-border cursor-pointer accent-primary"
+                      />
+                      <span className="text-[9px] text-text-muted">Enable</span>
+                    </div>
+                  </div>
+                  
+                  {selectedSubtitle.style?.outlineWidth !== undefined && selectedSubtitle.style.outlineWidth > 0 && (
+                    <div className="space-y-2 pl-2 border-l border-primary/20">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-text-muted">Outline Color</span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedSubtitle.style?.outlineColor || "#000000"}
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  outlineColor: e.target.value,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-5 h-5 rounded border border-border cursor-pointer"
+                          />
+                          <span className="text-[8px] font-mono text-text-muted uppercase">
+                            {selectedSubtitle.style?.outlineColor || "#000000"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-[9px] text-text-muted">Thickness</span>
+                        <div className="flex items-center gap-2 flex-1 max-w-[120px]">
+                          <input
+                            type="range"
+                            min="1"
+                            max="10"
+                            step="1"
+                            value={selectedSubtitle.style?.outlineWidth || 3}
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  outlineWidth: parseInt(e.target.value),
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-full h-1 bg-background-tertiary rounded-lg appearance-none cursor-pointer accent-primary"
+                          />
+                          <span className="text-[9px] font-mono text-text-muted w-6 text-right">
+                            {selectedSubtitle.style?.outlineWidth || 3}px
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Drop Shadow/Glow */}
+                <div className="space-y-2 pb-2 border-b border-border/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-text-secondary font-medium">Text Shadow / Glow</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSubtitle.style?.shadowBlur !== undefined && selectedSubtitle.style.shadowBlur > 0}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          updateSubtitle(selectedSubtitle.id, {
+                            style: {
+                              ...(selectedSubtitle.style || {}),
+                              shadowBlur: enabled ? 6 : 0,
+                              shadowColor: selectedSubtitle.style?.shadowColor || "#000000",
+                              shadowOffsetX: 2,
+                              shadowOffsetY: 2,
+                            } as typeof selectedSubtitle.style,
+                          });
+                        }}
+                        className="w-3.5 h-3.5 rounded border border-border cursor-pointer accent-primary"
+                      />
+                      <span className="text-[9px] text-text-muted">Enable</span>
+                    </div>
+                  </div>
+
+                  {selectedSubtitle.style?.shadowBlur !== undefined && selectedSubtitle.style.shadowBlur > 0 && (
+                    <div className="space-y-2 pl-2 border-l border-primary/20">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-text-muted">Shadow Color</span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedSubtitle.style?.shadowColor || "#000000"}
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  shadowColor: e.target.value,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-5 h-5 rounded border border-border cursor-pointer"
+                          />
+                          <span className="text-[8px] font-mono text-text-muted uppercase">
+                            {selectedSubtitle.style?.shadowColor || "#000000"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-[9px] text-text-muted">Blur Radius</span>
+                        <div className="flex items-center gap-2 flex-1 max-w-[120px]">
+                          <input
+                            type="range"
+                            min="1"
+                            max="20"
+                            step="1"
+                            value={selectedSubtitle.style?.shadowBlur || 6}
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  shadowBlur: parseInt(e.target.value),
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-full h-1 bg-background-tertiary rounded-lg appearance-none cursor-pointer accent-primary"
+                          />
+                          <span className="text-[9px] font-mono text-text-muted w-6 text-right">
+                            {selectedSubtitle.style?.shadowBlur || 6}px
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Active Word background pill */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-text-secondary font-medium">Active Word Background (Pill)</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSubtitle.style?.showWordBackground || false}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          updateSubtitle(selectedSubtitle.id, {
+                            style: {
+                              ...(selectedSubtitle.style || {}),
+                              showWordBackground: checked,
+                              wordBackgroundColor: selectedSubtitle.style?.wordBackgroundColor || "rgba(0, 120, 255, 0.9)",
+                            } as typeof selectedSubtitle.style,
+                          });
+                        }}
+                        className="w-3.5 h-3.5 rounded border border-border cursor-pointer accent-primary"
+                      />
+                      <span className="text-[9px] text-text-muted">Enable</span>
+                    </div>
+                  </div>
+
+                  {selectedSubtitle.style?.showWordBackground && (
+                    <div className="space-y-2 pl-2 border-l border-primary/20">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-text-muted">Pill Color</span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={
+                              selectedSubtitle.style?.wordBackgroundColor?.startsWith("#")
+                                ? selectedSubtitle.style.wordBackgroundColor
+                                : "#0078ff"
+                            }
+                            onChange={(e) =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  wordBackgroundColor: e.target.value,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className="w-5 h-5 rounded border border-border cursor-pointer"
+                          />
+                          <span className="text-[8px] font-mono text-text-muted uppercase">
+                            {selectedSubtitle.style?.wordBackgroundColor || "#0078ff"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-6 gap-1 pt-1">
+                        {[
+                          "#0078ff",
+                          "#ff3b30",
+                          "#4cd964",
+                          "#ffcc00",
+                          "#5856d6",
+                          "#ff9500",
+                        ].map((color) => (
+                          <button
+                            key={color}
+                            onClick={() =>
+                              updateSubtitle(selectedSubtitle.id, {
+                                style: {
+                                  ...(selectedSubtitle.style || {}),
+                                  wordBackgroundColor: color,
+                                } as typeof selectedSubtitle.style,
+                              })
+                            }
+                            className={`w-5 h-5 rounded border transition-transform hover:scale-110 ${
+                              (selectedSubtitle.style?.wordBackgroundColor || "#0078ff") === color
+                                ? "border-white"
+                                : "border-transparent"
+                            }`}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </Section>

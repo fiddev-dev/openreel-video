@@ -205,7 +205,13 @@ export type CaptionAnimationStyle =
   | "typewriter"
   | "pop-in"
   | "slide-up"
-  | "glow-pulse";
+  | "glow-pulse"
+  | "active-zoom-spring"
+  | "jiggle-active"
+  | "bounce-jump"
+  | "slide-in-right"
+  | "fade-slide-up"
+  | "reveal-left";
 
 export interface SubtitleWord {
   readonly text: string;
@@ -231,6 +237,14 @@ export interface SubtitleStyle {
   readonly position: "top" | "center" | "bottom";
   readonly highlightColor?: string;
   readonly upcomingColor?: string;
+  readonly outlineColor?: string;
+  readonly outlineWidth?: number;
+  readonly shadowColor?: string;
+  readonly shadowBlur?: number;
+  readonly shadowOffsetX?: number;
+  readonly shadowOffsetY?: number;
+  readonly showWordBackground?: boolean;
+  readonly wordBackgroundColor?: string;
 }
 
 export interface AutomationPoint {

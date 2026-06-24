@@ -31,6 +31,7 @@ import type {
   EditingTemplateApplicationSource,
   EditingTemplatePrimitive,
   ResolvedEditingTemplateApplication,
+  ClipMetadata,
 } from "@openreel/core";
 import {
   ActionExecutor,
@@ -256,6 +257,7 @@ export interface ProjectState {
     text: string,
     duration?: number,
     style?: Partial<TextStyle>,
+    metadata?: ClipMetadata,
   ) => TextClip | null;
   updateTextContent: (clipId: string, text: string) => TextClip | null;
   updateTextStyle: (
@@ -4353,6 +4355,7 @@ export const useProjectStore = create<ProjectState>()(
         text: string,
         duration: number = 5,
         style?: Partial<TextStyle>,
+        metadata?: ClipMetadata,
       ) => {
         const titleEngine = useEngineStore.getState().titleEngine;
         if (!titleEngine) {
@@ -4373,6 +4376,7 @@ export const useProjectStore = create<ProjectState>()(
           text,
           duration,
           style,
+          metadata,
         });
 
         // Push to undo stack for undo support (separate from main timeline undo/redo)
@@ -4640,7 +4644,11 @@ export const useProjectStore = create<ProjectState>()(
             fontSize: style.fontSize,
             color: style.color,
             backgroundColor: style.backgroundColor || undefined,
-          } : undefined
+          } : undefined,
+          {
+            words: subtitle.words,
+            animationStyle: subtitle.animationStyle,
+          }
         );
       },
 
@@ -4661,10 +4669,93 @@ export const useProjectStore = create<ProjectState>()(
         }));
       },
 
-      /**
-       * Update a subtitle
-       */
       updateSubtitle: (subtitleId, updates) => {
+        const titleEngine = useEngineStore.getState().getTitleEngine();
+        const textClip = titleEngine?.getTextClip(subtitleId);
+        if (textClip) {
+          const styleUpdates: any = {};
+          const metadataUpdates: Record<string, any> = {};
+          let durationUpdate: number | undefined = undefined;
+          let startTimeUpdate: number | undefined = undefined;
+
+          if (updates.startTime !== undefined) {
+            startTimeUpdate = updates.startTime;
+          }
+          if (updates.endTime !== undefined) {
+            const start = updates.startTime !== undefined ? updates.startTime : textClip.startTime;
+            durationUpdate = updates.endTime - start;
+          } else if (updates.startTime !== undefined) {
+            const end = textClip.startTime + textClip.duration;
+            durationUpdate = end - updates.startTime;
+          }
+
+          if (updates.animationStyle !== undefined) {
+            metadataUpdates.animationStyle = updates.animationStyle;
+          }
+          if (updates.words !== undefined) {
+            metadataUpdates.words = updates.words;
+          }
+
+          if (updates.style) {
+            const s = updates.style;
+            if (s.fontFamily !== undefined) styleUpdates.fontFamily = s.fontFamily;
+            if (s.fontSize !== undefined) styleUpdates.fontSize = s.fontSize;
+            if (s.color !== undefined) styleUpdates.color = s.color;
+            if (s.backgroundColor !== undefined) styleUpdates.backgroundColor = s.backgroundColor;
+            if (s.position !== undefined) {
+              styleUpdates.verticalAlign = s.position === "top" ? "top" : s.position === "center" ? "middle" : "bottom";
+            }
+            if (s.outlineColor !== undefined) {
+              styleUpdates.strokeColor = s.outlineColor;
+              styleUpdates.outlineColor = s.outlineColor;
+            }
+            if (s.outlineWidth !== undefined) {
+              styleUpdates.strokeWidth = s.outlineWidth;
+              styleUpdates.outlineWidth = s.outlineWidth;
+            }
+            if (s.shadowColor !== undefined) styleUpdates.shadowColor = s.shadowColor;
+            if (s.shadowBlur !== undefined) styleUpdates.shadowBlur = s.shadowBlur;
+            if (s.shadowOffsetX !== undefined) styleUpdates.shadowOffsetX = s.shadowOffsetX;
+            if (s.shadowOffsetY !== undefined) styleUpdates.shadowOffsetY = s.shadowOffsetY;
+
+            if (s.showWordBackground !== undefined) {
+              styleUpdates.showWordBackground = s.showWordBackground;
+              metadataUpdates.showWordBackground = s.showWordBackground;
+            }
+            if (s.wordBackgroundColor !== undefined) {
+              styleUpdates.wordBackgroundColor = s.wordBackgroundColor;
+              metadataUpdates.wordBackgroundColor = s.wordBackgroundColor;
+            }
+            if (s.highlightColor !== undefined) {
+              styleUpdates.highlightColor = s.highlightColor;
+              metadataUpdates.highlightColor = s.highlightColor;
+            }
+            if (s.upcomingColor !== undefined) {
+              styleUpdates.upcomingColor = s.upcomingColor;
+              metadataUpdates.upcomingColor = s.upcomingColor;
+            }
+          }
+
+          titleEngine?.updateTextClip(subtitleId, {
+            text: updates.text,
+            startTime: startTimeUpdate,
+            duration: durationUpdate,
+            style: Object.keys(styleUpdates).length > 0 ? styleUpdates : undefined,
+            metadata: Object.keys(metadataUpdates).length > 0 ? {
+              ...(textClip.metadata || {}),
+              ...metadataUpdates,
+            } : undefined,
+          });
+
+          set((state) => ({
+            project: {
+              ...state.project,
+              modifiedAt: Date.now(),
+            },
+          }));
+          return;
+        }
+
         set((state) => ({
           project: {
             ...state.project,
@@ -4761,6 +4852,53 @@ export const useProjectStore = create<ProjectState>()(
 
       applySubtitleStyleToAll: (subtitleId: string) => {
         const { project } = get();
+        const titleEngine = useEngineStore.getState().getTitleEngine();
+        const sourceTextClip = titleEngine?.getTextClip(subtitleId);
+
+        if (titleEngine && sourceTextClip) {
+          const trackId = sourceTextClip.trackId;
+          const allTextClips = titleEngine.getAllTextClips();
+          for (const clip of allTextClips) {
+            if (clip.trackId === trackId && clip.id !== sourceTextClip.id) {
+              titleEngine.updateTextClip(clip.id, {
+                style: {
+                  ...clip.style,
+                  fontFamily: sourceTextClip.style.fontFamily,
+                  fontSize: sourceTextClip.style.fontSize,
+                  color: sourceTextClip.style.color,
+                  backgroundColor: sourceTextClip.style.backgroundColor,
+                  verticalAlign: sourceTextClip.style.verticalAlign,
+                  strokeColor: sourceTextClip.style.strokeColor,
+                  strokeWidth: sourceTextClip.style.strokeWidth,
+                  shadowColor: sourceTextClip.style.shadowColor,
+                  shadowBlur: sourceTextClip.style.shadowBlur,
+                  shadowOffsetX: sourceTextClip.style.shadowOffsetX,
+                  shadowOffsetY: sourceTextClip.style.shadowOffsetY,
+                  outlineColor: (sourceTextClip.style as any).outlineColor,
+                  outlineWidth: (sourceTextClip.style as any).outlineWidth,
+                  showWordBackground: (sourceTextClip.style as any).showWordBackground,
+                  wordBackgroundColor: (sourceTextClip.style as any).wordBackgroundColor,
+                } as any,
+                metadata: {
+                  ...(clip.metadata || {}),
+                  animationStyle: sourceTextClip.metadata?.animationStyle,
+                  showWordBackground: sourceTextClip.metadata?.showWordBackground,
+                  wordBackgroundColor: sourceTextClip.metadata?.wordBackgroundColor,
+                  highlightColor: sourceTextClip.metadata?.highlightColor,
+                  upcomingColor: sourceTextClip.metadata?.upcomingColor,
+                }
+              });
+            }
+          }
+          set({
+            project: {
+              ...project,
+              modifiedAt: Date.now(),
+            },
+          });
+          return;
+        }
+
         const sourceSub = project.timeline.subtitles.find((s) => s.id === subtitleId);
         if (!sourceSub) return;
         set({

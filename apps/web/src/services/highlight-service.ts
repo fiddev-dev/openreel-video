@@ -193,13 +193,22 @@ Do not include any markdown tags, markdown blocks (like \`\`\`json), or addition
       throw new Error("Empty response from Gemini API");
     }
     
-    // Clean up response if there are markdown blocks
-    const cleanedText = textResponse
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
+    // Extract JSON array robustly by finding the boundaries of the array
+    const startIndex = textResponse.indexOf("[");
+    const endIndex = textResponse.lastIndexOf("]");
+    
+    let jsonText = textResponse;
+    if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
+      jsonText = textResponse.substring(startIndex, endIndex + 1);
+    } else {
+      // Fallback cleanup
+      jsonText = textResponse
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+    }
 
-    const highlightsList = JSON.parse(cleanedText);
+    const highlightsList = JSON.parse(jsonText);
     if (!Array.isArray(highlightsList)) {
       throw new Error("Gemini response is not a valid array");
     }

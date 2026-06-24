@@ -5,12 +5,12 @@ import {
   type SVGClip,
   type StickerClip,
   type Subtitle,
-  renderAnimatedCaption,
-  type WordSegment,
+  type CaptionAnimationStyle,
   getBackgroundRemovalEngine,
   AnimationEngine,
   type Keyframe,
   type EmphasisAnimation,
+  WordHighlightRenderer,
 } from "@openreel/core";
 import * as THREE from "three";
 
@@ -568,6 +568,41 @@ export const renderTextClipToCanvas = (
   canvasHeight: number,
   time: number,
 ): void => {
+  const isSubtitle =
+    textClip.metadata?.words ||
+    textClip.metadata?.animationStyle ||
+    textClip.trackId === "Captions";
+
+  if (isSubtitle) {
+    const subtitle: Subtitle = {
+      id: textClip.id,
+      text: textClip.text,
+      startTime: textClip.startTime,
+      endTime: textClip.startTime + textClip.duration,
+      words: textClip.metadata?.words as any[],
+      animationStyle: textClip.metadata?.animationStyle as CaptionAnimationStyle | undefined,
+      style: {
+        fontFamily: textClip.style.fontFamily,
+        fontSize: textClip.style.fontSize,
+        color: textClip.style.color,
+        backgroundColor: textClip.style.backgroundColor || "transparent",
+        position: (textClip.style.verticalAlign === "top" ? "top" : textClip.style.verticalAlign === "middle" ? "center" : "bottom") as "top" | "center" | "bottom",
+        outlineColor: (textClip.style as any).outlineColor || textClip.style.strokeColor,
+        outlineWidth: (textClip.style as any).outlineWidth !== undefined ? (textClip.style as any).outlineWidth : textClip.style.strokeWidth,
+        shadowColor: textClip.style.shadowColor,
+        shadowBlur: textClip.style.shadowBlur,
+        shadowOffsetX: textClip.style.shadowOffsetX,
+        shadowOffsetY: textClip.style.shadowOffsetY,
+        showWordBackground: (textClip.metadata?.showWordBackground ?? (textClip.style as any).showWordBackground) as boolean | undefined,
+        wordBackgroundColor: (textClip.metadata?.wordBackgroundColor ?? (textClip.style as any).wordBackgroundColor) as string | undefined,
+        highlightColor: (textClip.metadata?.highlightColor ?? (textClip.style as any).highlightColor) as string | undefined,
+        upcomingColor: (textClip.metadata?.upcomingColor ?? (textClip.style as any).upcomingColor) as string | undefined,
+      },
+    };
+    WordHighlightRenderer.render(ctx, subtitle, time, canvasWidth, canvasHeight);
+    return;
+  }
+
   const clipLocalTime = time - textClip.startTime;
   const animatedState = textAnimationEngine.getAnimatedState(
     textClip,
@@ -1615,182 +1650,11 @@ export const renderSubtitleToCanvas = (
   canvasHeight: number,
   currentTime?: number,
 ): void => {
-  const { text, animationStyle, words } = subtitle;
+  const { text } = subtitle;
   if (!text || text.trim().length === 0) return;
 
-  const hasAnimation =
-    animationStyle && animationStyle !== "none" && words && words.length > 0;
   const time = currentTime ?? subtitle.startTime;
-
-  if (hasAnimation) {
-    renderAnimatedSubtitle(ctx, subtitle, canvasWidth, canvasHeight, time);
-  } else {
-    renderStaticSubtitle(ctx, subtitle, canvasWidth, canvasHeight);
-  }
-};
-
-const renderStaticSubtitle = (
-  ctx: CanvasRenderingContext2D,
-  subtitle: Subtitle,
-  canvasWidth: number,
-  canvasHeight: number,
-): void => {
-  const { text, style } = subtitle;
-
-  ctx.save();
-
-  const fontSize = style?.fontSize || 24;
-  const fontFamily = style?.fontFamily || "Inter";
-  const color = style?.color || "#ffffff";
-  const backgroundColor = style?.backgroundColor || "rgba(0, 0, 0, 0.7)";
-  const position = style?.position || "bottom";
-
-  ctx.font = `bold ${fontSize}px "${fontFamily}"`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-
-  const lines = text.split("\n");
-  const lineHeight = fontSize * 1.3;
-  const totalHeight = lines.length * lineHeight;
-
-  let baseY: number;
-  if (position === "top") {
-    baseY = fontSize * 2;
-  } else if (position === "center") {
-    baseY = canvasHeight / 2 - totalHeight / 2;
-  } else {
-    baseY = canvasHeight - fontSize * 2 - totalHeight;
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.length === 0) continue;
-
-    const y = baseY + i * lineHeight + lineHeight / 2;
-    const metrics = ctx.measureText(line);
-    const bgWidth = metrics.width + 20;
-    const bgHeight = lineHeight;
-
-    ctx.fillStyle = backgroundColor;
-    ctx.fillRect(
-      canvasWidth / 2 - bgWidth / 2,
-      y - bgHeight / 2,
-      bgWidth,
-      bgHeight,
-    );
-
-    ctx.fillStyle = color;
-    ctx.fillText(line, canvasWidth / 2, y);
-  }
-
-  ctx.restore();
-};
-
-const renderAnimatedSubtitle = (
-  ctx: CanvasRenderingContext2D,
-  subtitle: Subtitle,
-  canvasWidth: number,
-  canvasHeight: number,
-  currentTime: number,
-): void => {
-  const frame = renderAnimatedCaption(subtitle, currentTime);
-
-  if (!frame.visible || frame.segments.length === 0) {
-    return;
-  }
-
-  ctx.save();
-
-  const style = subtitle.style;
-  const fontSize = style?.fontSize || 24;
-  const fontFamily = style?.fontFamily || "Inter";
-  const baseColor = style?.color || "#ffffff";
-  const backgroundColor = style?.backgroundColor || "rgba(0, 0, 0, 0.7)";
-  const position = style?.position || "bottom";
-
-  ctx.font = `bold ${fontSize}px "${fontFamily}"`;
-  ctx.textBaseline = "middle";
-
-  const lineHeight = fontSize * 1.3;
-
-  let baseY: number;
-  if (position === "top") {
-    baseY = fontSize * 2 + lineHeight / 2;
-  } else if (position === "center") {
-    baseY = canvasHeight / 2;
-  } else {
-    baseY = canvasHeight - fontSize * 2 - lineHeight / 2;
-  }
-
-  const totalText = frame.segments.map((s) => s.text).join(" ");
-  const totalWidth = ctx.measureText(totalText).width;
-  const bgWidth = totalWidth + 30;
-  const bgHeight = lineHeight + 10;
-
-  ctx.fillStyle = backgroundColor;
-  ctx.fillRect(
-    canvasWidth / 2 - bgWidth / 2,
-    baseY - bgHeight / 2,
-    bgWidth,
-    bgHeight,
-  );
-
-  let xOffset = canvasWidth / 2 - totalWidth / 2;
-
-  for (const segment of frame.segments) {
-    const segmentWidth = ctx.measureText(segment.text + " ").width;
-
-    ctx.save();
-    ctx.globalAlpha = segment.opacity;
-
-    const centerX = xOffset + ctx.measureText(segment.text).width / 2;
-    const centerY = baseY + segment.offsetY;
-
-    ctx.translate(centerX, centerY);
-    ctx.scale(segment.scale, segment.scale);
-    ctx.translate(-centerX, -centerY);
-
-    const segmentColor = getSegmentColor(
-      segment,
-      baseColor,
-      style?.highlightColor,
-    );
-    ctx.fillStyle = segmentColor;
-    ctx.textAlign = "left";
-    ctx.fillText(segment.text, xOffset, baseY + segment.offsetY);
-
-    ctx.restore();
-
-    xOffset += segmentWidth;
-  }
-
-  ctx.restore();
-};
-
-const getSegmentColor = (
-  segment: WordSegment,
-  baseColor: string,
-  highlightColor?: string,
-): string => {
-  if (segment.color) {
-    if (segment.color.startsWith("linear-gradient")) {
-      return highlightColor || "#ffff00";
-    }
-    if (segment.color === "transparent") {
-      return "rgba(0,0,0,0)";
-    }
-    return segment.color;
-  }
-
-  switch (segment.style) {
-    case "highlighted":
-    case "active":
-      return highlightColor || "#ffff00";
-    case "hidden":
-      return "rgba(0,0,0,0)";
-    default:
-      return baseColor;
-  }
+  WordHighlightRenderer.render(ctx, subtitle, time, canvasWidth, canvasHeight);
 };
 
 export const drawFrameWithTransform = (

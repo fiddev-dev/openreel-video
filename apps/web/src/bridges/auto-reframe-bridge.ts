@@ -22,6 +22,14 @@ export class AutoReframeBridge {
       throw new Error("Clip not found");
     }
 
+    const project = store.project;
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    const projectWidth = project.settings.width;
+    const projectHeight = project.settings.height;
+    const projectRatio = projectWidth / projectHeight;
+
     const mediaItem = store.getMediaItem(clip.mediaId);
     if (!mediaItem) {
       throw new Error("Media item not found");
@@ -56,7 +64,10 @@ export class AutoReframeBridge {
         video.onerror = () => reject(new Error("Failed to load video metadata"));
       });
 
-      const duration = video.duration || 10;
+      const inPoint = clip.inPoint ?? 0;
+      const outPoint = (clip.outPoint ?? video.duration) || 10;
+      const clipDuration = outPoint - inPoint;
+
       // Extract at 2 fps to balance accuracy and speed/memory
       const fps = 2;
       const step = 1 / fps;
@@ -64,19 +75,19 @@ export class AutoReframeBridge {
       const canvas = document.createElement("canvas");
       
       // Limit resolution of analysis frames to speed up detection
-      const scale = Math.min(1, 640 / video.videoWidth);
-      canvas.width = video.videoWidth * scale;
-      canvas.height = video.videoHeight * scale;
+      const analysisScale = Math.min(1, 1080 / video.videoWidth);
+      canvas.width = video.videoWidth * analysisScale;
+      canvas.height = video.videoHeight * analysisScale;
       const ctx = canvas.getContext("2d");
 
       if (!ctx) {
         throw new Error("Failed to get canvas context");
       }
 
-      const totalFrames = Math.ceil(duration * fps);
+      const totalFrames = Math.ceil(clipDuration * fps);
       let frameIdx = 0;
 
-      for (let time = 0; time < duration; time += step) {
+      for (let time = inPoint; time < outPoint; time += step) {
         video.currentTime = time;
         await new Promise<void>((resolve) => {
           video.onseeked = () => resolve();
@@ -101,34 +112,72 @@ export class AutoReframeBridge {
       frames.forEach((f) => f.close());
 
       if (result.success && result.keyframes.length > 0) {
-        // Map engine keyframes to timeline keyframes
+        // Calculate base scale for fitting the video onto the project canvas
+        const videoAspect = video.videoWidth / video.videoHeight;
+        let drawWidth: number;
+        if (videoAspect > projectRatio) {
+          drawWidth = projectWidth;
+        } else {
+          drawWidth = projectHeight * videoAspect;
+        }
+        const baseScale = drawWidth / video.videoWidth;
+
+        // Map engine keyframes to timeline keyframes using correct schemas and clip-local time space
         const timelineKeyframes: Keyframe[] = [];
 
         result.keyframes.forEach((kf) => {
-          const scaleX = video.videoWidth / kf.cropWidth;
-          const scaleY = video.videoHeight / kf.cropHeight;
+          // Scale crop coordinates back to the original video pixel space
+          const originalCropX = kf.cropX / analysisScale;
+          const originalCropY = kf.cropY / analysisScale;
+          const originalCropWidth = kf.cropWidth / analysisScale;
+          const originalCropHeight = kf.cropHeight / analysisScale;
 
-          // Position Keyframe
+          const scaleX = video.videoWidth / originalCropWidth;
+          const scaleY = video.videoHeight / originalCropHeight;
+          const scale = Math.max(scaleX, scaleY);
+          
+          // Use clip local time, NOT timeline absolute time
+          const kfClipTime = kf.time;
+
+          const dx = video.videoWidth / 2 - (originalCropX + originalCropWidth / 2);
+          const dy = video.videoHeight / 2 - (originalCropY + originalCropHeight / 2);
+          const factor = baseScale * scale;
+          const posX = dx * factor;
+          const posY = dy * factor;
+
+          // Position X Keyframe
           timelineKeyframes.push({
-            id: `kf-pos-${Math.random().toString(36).substring(2, 9)}-${kf.time}`,
-            time: kf.time,
-            property: "position",
-            value: {
-              x: (video.videoWidth / 2 - (kf.cropX + kf.cropWidth / 2)) * scaleX,
-              y: (video.videoHeight / 2 - (kf.cropY + kf.cropHeight / 2)) * scaleY,
-            },
+            id: `kf-posx-${Math.random().toString(36).substring(2, 9)}-${kfClipTime}`,
+            time: kfClipTime,
+            property: "position.x",
+            value: posX,
             easing: "linear",
           });
 
-          // Scale Keyframe
+          // Position Y Keyframe
           timelineKeyframes.push({
-            id: `kf-scale-${Math.random().toString(36).substring(2, 9)}-${kf.time}`,
-            time: kf.time,
-            property: "scale",
-            value: {
-              x: scaleX,
-              y: scaleY,
-            },
+            id: `kf-posy-${Math.random().toString(36).substring(2, 9)}-${kfClipTime}`,
+            time: kfClipTime,
+            property: "position.y",
+            value: posY,
+            easing: "linear",
+          });
+
+          // Scale X Keyframe
+          timelineKeyframes.push({
+            id: `kf-scalex-${Math.random().toString(36).substring(2, 9)}-${kfClipTime}`,
+            time: kfClipTime,
+            property: "scale.x",
+            value: scale,
+            easing: "linear",
+          });
+
+          // Scale Y Keyframe
+          timelineKeyframes.push({
+            id: `kf-scaley-${Math.random().toString(36).substring(2, 9)}-${kfClipTime}`,
+            time: kfClipTime,
+            property: "scale.y",
+            value: scale,
             easing: "linear",
           });
         });
@@ -145,6 +194,36 @@ export class AutoReframeBridge {
       video.load();
       URL.revokeObjectURL(url);
     }
+  }
+
+  async runAutoFocusFace(
+    clipId: string,
+    onProgress?: ReframeProgressCallback
+  ): Promise<ReframeResult> {
+    const store = useProjectStore.getState();
+    const project = store.project;
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    const projectWidth = project.settings.width;
+    const projectHeight = project.settings.height;
+    const projectRatio = projectWidth / projectHeight;
+
+    const settings: ReframeSettings = {
+      targetAspectRatio: "custom",
+      customRatio: projectRatio,
+      trackingSpeed: 0.5,
+      padding: 0.1,
+      smoothing: 0.8,
+      followSubject: true,
+      centerBias: 0.0, // Put the face exactly in the center
+      zoomOnSubject: true,
+      subjectScaleMultiplier: 3.5,
+      verticalAlign: 0.5, // Center face vertically
+    };
+
+    return this.runAutoReframe(clipId, settings, onProgress);
   }
 }
 

@@ -19,6 +19,7 @@ import { AutoReframeSection } from "../";
 import { AutoEditPanel } from "../../panels/AutoEditPanel";
 import { HighlightExtractorPanel } from "../../panels/HighlightExtractorPanel";
 import { SmartBrollPanel } from "../../panels/SmartBrollPanel";
+import { FaceSplitterPanel } from "../../panels/FaceSplitterPanel";
 import { InspectorSection } from "../shell/InspectorSection";
 
 export interface AiTabProps {
@@ -72,7 +73,7 @@ export const AiTab: React.FC<AiTabProps> = ({
 }) => {
   return (
     <>
-      {clipType === "video" && (
+      {(clipType === "video" || clipType === "audio") && (
         <>
           <InspectorSection
             title="AI Auto-Captions"
@@ -202,6 +203,16 @@ export const AiTab: React.FC<AiTabProps> = ({
           defaultOpen={false}
         >
           <AutoReframeSection clipId={clipId} />
+        </InspectorSection>
+      )}
+
+      {clipType === "video" && (
+        <InspectorSection
+          title="AI Face Scene Splitter"
+          sectionId="ai-face-splitter"
+          defaultOpen={false}
+        >
+          <FaceSplitterPanel clipId={clipId} />
         </InspectorSection>
       )}
 

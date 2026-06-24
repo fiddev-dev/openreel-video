@@ -171,3 +171,10 @@ export {
   type ReframeProgressCallback,
 } from "./auto-reframe-bridge";
 
+export {
+  FaceSplitterBridge,
+  getFaceSplitterBridge,
+  type FaceSplitterProgressCallback,
+  type FaceSplitterResult,
+} from "./face-splitter-bridge";
+

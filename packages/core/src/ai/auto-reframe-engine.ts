@@ -142,6 +142,9 @@ export interface ReframeSettings {
   smoothing: number;
   followSubject: boolean;
   centerBias: number;
+  zoomOnSubject?: boolean;
+  subjectScaleMultiplier?: number;
+  verticalAlign?: number;
 }
 
 export const DEFAULT_REFRAME_SETTINGS: ReframeSettings = {
@@ -151,6 +154,9 @@ export const DEFAULT_REFRAME_SETTINGS: ReframeSettings = {
   smoothing: 0.8,
   followSubject: true,
   centerBias: 0.3,
+  zoomOnSubject: true,
+  subjectScaleMultiplier: 3.8,
+  verticalAlign: 0.5,
 };
 
 export interface ReframeResult {
@@ -169,6 +175,8 @@ export class AutoReframeEngine {
   private faceDetector: FaceDetector | null = null;
   private initialized = false;
   private faceCache: Map<number, DetectedFace[]> = new Map();
+  private lastKnownCropWidth = 0;
+  private lastKnownCropHeight = 0;
 
   async initialize(onProgress?: ProgressCallback): Promise<void> {
     if (this.initialized) return;
@@ -185,10 +193,11 @@ export class AutoReframeEngine {
       );
       this.faceDetector = await FaceDetector.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite",
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/latest/blaze_face_full_range.tflite",
           delegate: "GPU",
         },
         runningMode: "IMAGE",
+        minDetectionConfidence: 0.5,
       });
       onProgress?.(80, "MediaPipe face detection model loaded");
     } catch (err) {
@@ -203,12 +212,26 @@ export class AutoReframeEngine {
     return this.initialized;
   }
 
+  async detectFacesRaw(frame: ImageBitmap): Promise<any[]> {
+    if (!this.initialized || !this.faceDetector) return [];
+    try {
+      const detectionResult = this.faceDetector.detect(frame);
+      return detectionResult.detections || [];
+    } catch (err) {
+      console.warn("[AutoReframeEngine] Raw face detection failed:", err);
+      return [];
+    }
+  }
+
   async analyzeClip(
     frames: ImageBitmap[],
     frameRate: number,
     settings: ReframeSettings,
     onProgress?: ProgressCallback,
   ): Promise<ReframeResult> {
+    this.faceCache.clear();
+    this.lastKnownCropWidth = 0;
+    this.lastKnownCropHeight = 0;
     if (!this.initialized || !this.ctx) {
       return {
         keyframes: [],
@@ -357,7 +380,9 @@ export class AutoReframeEngine {
     }
 
     if (faces.length === 0) {
-      faces = this.detectFacesSimple(frame);
+      // Discard skin color fallback results to prevent false positive tracking on backgrounds
+      this.detectFacesSimple(frame);
+      faces = [];
     }
 
     this.faceCache.set(frameIndex, faces);
@@ -546,8 +571,10 @@ export class AutoReframeEngine {
 
     let targetX = (sourceWidth - cropWidth) / 2;
     let targetY = (sourceHeight - cropHeight) / 2;
+    let isFaceTracked = false;
 
     if (settings.followSubject && faces.length > 0) {
+      isFaceTracked = true;
       const mainFace = faces.reduce((a, b) =>
         a.width * a.height * a.confidence > b.width * b.height * b.confidence
           ? a
@@ -557,10 +584,29 @@ export class AutoReframeEngine {
       const faceCenterX = mainFace.x + mainFace.width / 2;
       const faceCenterY = mainFace.y + mainFace.height / 2;
 
+      // Zoom in on face if zoomOnSubject is enabled (defaults to true)
+      const shouldZoom = settings.zoomOnSubject ?? true;
+      if (shouldZoom) {
+        const multiplier = settings.subjectScaleMultiplier ?? 3.8;
+        const idealHeight = Math.max(450, Math.min(sourceHeight, mainFace.height * multiplier));
+        cropHeight = idealHeight;
+        cropWidth = cropHeight * targetRatio;
+
+        if (cropWidth > sourceWidth) {
+          cropWidth = sourceWidth;
+          cropHeight = cropWidth / targetRatio;
+        }
+
+        this.lastKnownCropWidth = cropWidth;
+        this.lastKnownCropHeight = cropHeight;
+      }
+
       const paddingOffset = settings.padding * Math.min(cropWidth, cropHeight);
 
       targetX = faceCenterX - cropWidth / 2 + paddingOffset * 0;
-      targetY = faceCenterY - cropHeight * 0.35;
+      
+      const vAlign = settings.verticalAlign ?? 0.5;
+      targetY = faceCenterY - cropHeight * vAlign;
 
       targetX =
         targetX * (1 - settings.centerBias) +
@@ -568,6 +614,16 @@ export class AutoReframeEngine {
       targetY =
         targetY * (1 - settings.centerBias) +
         ((sourceHeight - cropHeight) / 2) * settings.centerBias;
+    }
+
+    // If we lost the face but have a last known crop, lock/hold to the last known position to prevent jumping
+    if (!isFaceTracked && (lastCropX !== 0 || lastCropY !== 0)) {
+      return {
+        x: lastCropX,
+        y: lastCropY,
+        width: Math.round(this.lastKnownCropWidth || cropWidth),
+        height: Math.round(this.lastKnownCropHeight || cropHeight),
+      };
     }
 
     targetX = Math.max(0, Math.min(targetX, sourceWidth - cropWidth));

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Sparkles, Play, Check, Loader2, Plus } from "lucide-react";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
@@ -7,6 +7,7 @@ import {
   getTranscriptionService,
   initializeTranscriptionService,
   type TranscriptWord,
+  type Subtitle,
 } from "@openreel/core";
 import { OPENREEL_TRANSCRIBE_URL } from "../../../config/api-endpoints";
 import {
@@ -20,11 +21,46 @@ interface HighlightExtractorPanelProps {
   clipId: string;
 }
 
+// Module-level caches to store highlights and selection per clip to survive unmounts/selection changes
+const highlightsCache = new Map<string, HighlightResult[]>();
+const selectedCache = new Map<string, Set<number>>();
+
 export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = ({
   clipId,
 }) => {
-  const [highlights, setHighlights] = useState<HighlightResult[]>([]);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const clipIdRef = useRef(clipId);
+  useEffect(() => {
+    clipIdRef.current = clipId;
+  }, [clipId]);
+
+  const [highlights, setHighlightsInternal] = useState<HighlightResult[]>(() => {
+    return highlightsCache.get(clipId) || [];
+  });
+  const [selected, setSelectedInternal] = useState<Set<number>>(() => {
+    return selectedCache.get(clipId) || new Set();
+  });
+
+  const setHighlights = useCallback((newVal: HighlightResult[] | ((prev: HighlightResult[]) => HighlightResult[])) => {
+    setHighlightsInternal((prev) => {
+      const next = typeof newVal === "function" ? newVal(prev) : newVal;
+      highlightsCache.set(clipIdRef.current, next);
+      return next;
+    });
+  }, []);
+
+  const setSelected = useCallback((newVal: Set<number> | ((prev: Set<number>) => Set<number>)) => {
+    setSelectedInternal((prev) => {
+      const next = typeof newVal === "function" ? newVal(prev) : newVal;
+      selectedCache.set(clipIdRef.current, next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setHighlightsInternal(highlightsCache.get(clipId) || []);
+    setSelectedInternal(selectedCache.get(clipId) || new Set());
+  }, [clipId]);
+
   const [phase, setPhase] = useState("");
   const [progress, setProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -63,22 +99,38 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
     try {
       let transcript: TranscriptWord[] = [];
 
-      // Check if there are already subtitles on the timeline that fall within this clip's range
-      const clipSubtitles = (project.timeline.subtitles || []).filter(
-        (sub) => sub.startTime >= clip.startTime && sub.endTime <= clip.startTime + clip.duration
+      // Check if there are already subtitles on the timeline that overlap with this clip's range
+      const captionsTrack = project.timeline.tracks.find(
+        (t) => t.type === "text" && t.name === "Captions"
+      );
+      const allTextClips = useProjectStore.getState().getAllTextClips();
+      const allSubtitles: Subtitle[] = captionsTrack
+        ? allTextClips
+            .filter((tc) => tc.trackId === captionsTrack.id)
+            .map((tc) => ({
+              id: tc.id,
+              text: tc.text,
+              startTime: tc.startTime,
+              endTime: tc.startTime + tc.duration,
+              words: (tc.metadata?.words as any) || [],
+            }))
+        : [];
+
+      const clipSubtitles = allSubtitles.filter(
+        (sub: Subtitle) => sub.startTime < clip.startTime + clip.duration - 0.05 && sub.endTime > clip.startTime + 0.05
       );
 
       if (clipSubtitles.length > 0) {
         setPhase("Using existing subtitles...");
         setProgress(10);
-        transcript = clipSubtitles.flatMap((sub) => {
-          const startRel = sub.startTime - clip.startTime + clip.inPoint;
-          const endRel = sub.endTime - clip.startTime + clip.inPoint;
+        transcript = clipSubtitles.flatMap((sub: Subtitle) => {
+          const startRel = Math.max(clip.inPoint, sub.startTime - clip.startTime + clip.inPoint);
+          const endRel = Math.min(clip.inPoint + clip.duration, sub.endTime - clip.startTime + clip.inPoint);
           return sub.words && sub.words.length > 0
-            ? sub.words.map((w) => ({
+            ? sub.words.map((w: any) => ({
                 text: w.text,
-                start: w.startTime - clip.startTime + clip.inPoint,
-                end: w.endTime - clip.startTime + clip.inPoint,
+                start: Math.max(clip.inPoint, w.startTime - clip.startTime + clip.inPoint),
+                end: Math.min(clip.inPoint + clip.duration, w.endTime - clip.startTime + clip.inPoint),
               }))
             : [{ text: sub.text, start: startRel, end: endRel }];
         });
@@ -95,11 +147,17 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
           (p) => setProgress(Math.round(p.progress * 20)),
         );
 
-        transcript = subtitles.flatMap((sub) =>
-          sub.words
-            ? sub.words.map((w) => ({ text: w.text, start: w.startTime, end: w.endTime }))
-            : [{ text: sub.text, start: sub.startTime, end: sub.endTime }],
-        );
+        transcript = subtitles.flatMap((sub) => {
+          const startRel = Math.max(clip.inPoint, sub.startTime - clip.startTime + clip.inPoint);
+          const endRel = Math.min(clip.inPoint + clip.duration, sub.endTime - clip.startTime + clip.inPoint);
+          return sub.words && sub.words.length > 0
+            ? sub.words.map((w) => ({
+                text: w.text,
+                start: Math.max(clip.inPoint, w.startTime - clip.startTime + clip.inPoint),
+                end: Math.min(clip.inPoint + clip.duration, w.endTime - clip.startTime + clip.inPoint),
+              }))
+            : [{ text: sub.text, start: startRel, end: endRel }];
+        });
       }
 
       if (transcript.length === 0) {
@@ -201,7 +259,21 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
         }
 
         // 5. Copy and align subtitles that overlap with the highlight segment
-        const originalSubtitles = project.timeline.subtitles || [];
+        const captionsTrack = project.timeline.tracks.find(
+          (t) => t.type === "text" && t.name === "Captions"
+        );
+        const allTextClips = useProjectStore.getState().getAllTextClips();
+        const originalSubtitles: Subtitle[] = captionsTrack
+          ? allTextClips
+              .filter((tc) => tc.trackId === captionsTrack.id)
+              .map((tc) => ({
+                id: tc.id,
+                text: tc.text,
+                startTime: tc.startTime,
+                endTime: tc.startTime + tc.duration,
+                words: (tc.metadata?.words as any) || [],
+              }))
+          : [];
         for (const sub of originalSubtitles) {
           const relativeToSource = sub.startTime - originalClip.startTime + originalClip.inPoint;
           if (relativeToSource >= highlight.start && relativeToSource <= highlight.end) {
@@ -270,7 +342,7 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <label className="text-[10px] text-text-secondary">Clips</label>
           <input
             type="number"
@@ -280,18 +352,29 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
             onChange={(e) =>
               setPreferences((p) => ({ ...p, targetClipCount: parseInt(e.target.value) || 5 }))
             }
-            className="w-12 px-1 py-0.5 text-[10px] bg-background-secondary border border-border rounded text-text-primary"
+            className="w-10 px-1 py-0.5 text-[10px] bg-background-secondary border border-border rounded text-text-primary"
+          />
+          <label className="text-[10px] text-text-secondary">Min</label>
+          <input
+            type="number"
+            min={1}
+            max={preferences.maxClipDuration}
+            value={preferences.minClipDuration}
+            onChange={(e) =>
+              setPreferences((p) => ({ ...p, minClipDuration: parseInt(e.target.value) || 5 }))
+            }
+            className="w-10 px-1 py-0.5 text-[10px] bg-background-secondary border border-border rounded text-text-primary"
           />
           <label className="text-[10px] text-text-secondary">Max</label>
           <input
             type="number"
-            min={1}
+            min={preferences.minClipDuration || 1}
             max={300}
             value={preferences.maxClipDuration}
             onChange={(e) =>
               setPreferences((p) => ({ ...p, maxClipDuration: parseInt(e.target.value) || 60 }))
             }
-            className="w-12 px-1 py-0.5 text-[10px] bg-background-secondary border border-border rounded text-text-primary"
+            className="w-10 px-1 py-0.5 text-[10px] bg-background-secondary border border-border rounded text-text-primary"
           />
           <span className="text-[10px] text-text-muted">s</span>
         </div>

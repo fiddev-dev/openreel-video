@@ -14,6 +14,9 @@ import {
 import type { Clip, Track } from "@openreel/core";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
+import { useUIStore } from "../../../stores/ui-store";
+import { getAutoReframeBridge } from "../../../bridges/auto-reframe-bridge";
+import { toast } from "../../../stores/notification-store";
 import {
   ContextMenuContent,
   ContextMenuItem,
@@ -114,6 +117,64 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
     onClose?.();
   };
 
+  const handleAutoFocusFace = async () => {
+    onClose?.();
+    const selectedIds = useUIStore.getState().getSelectedClipIds();
+    const targetIds = selectedIds.includes(clip.id) ? selectedIds : [clip.id];
+
+    const project = useProjectStore.getState().project;
+    if (!project) return;
+
+    const validClips = targetIds
+      .map((id) => {
+        const c = useProjectStore.getState().getClip(id);
+        if (!c) return null;
+        const t = project.timeline.tracks.find((tr) => tr.id === c.trackId);
+        return { clip: c, track: t };
+      })
+      .filter(
+        (item): item is { clip: Clip; track: Track } =>
+          item !== null &&
+          item.track !== undefined &&
+          (item.track.type === "video" || item.track.type === "image")
+      );
+
+    if (validClips.length === 0) {
+      toast.warning("No Video/Image Clips", "Select at least one video or image clip to auto-focus.");
+      return;
+    }
+
+    toast.info("Auto Focus Face", `Starting face tracking analysis on ${validClips.length} clip(s)...`);
+
+    // Sequential processing to avoid memory issues with MediaPipe
+    (async () => {
+      let successCount = 0;
+      const bridge = getAutoReframeBridge();
+      for (let i = 0; i < validClips.length; i++) {
+        const item = validClips[i];
+        try {
+          if (validClips.length > 1) {
+            toast.info(
+              "Auto Focus Face",
+              `Analyzing clip ${i + 1}/${validClips.length}...`
+            );
+          }
+          await bridge.runAutoFocusFace(item.clip.id);
+          successCount++;
+        } catch (err) {
+          console.error(`Auto Focus Face failed for clip ${item.clip.id}:`, err);
+          toast.error(
+            "Auto Focus Failed",
+            `Failed for clip ${item.clip.id}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+      if (successCount > 0) {
+        toast.success("Auto Focus Complete", `Successfully centered/zoomed face on ${successCount} clip(s).`);
+      }
+    })();
+  };
+
   const handleCopyEffects = () => {
     copyEffects(clip.id);
     onClose?.();
@@ -168,6 +229,13 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
         <ArrowLeftToLine className="mr-2 h-4 w-4" />
         Close Gap to Previous
       </ContextMenuItem>
+
+      {(isVideo || isImage) && (
+        <ContextMenuItem onClick={handleAutoFocusFace}>
+          <Sparkles className="mr-2 h-4 w-4 text-amber-400" />
+          Auto Focus Face
+        </ContextMenuItem>
+      )}
 
       {(isVideo || isImage) && (
         <>

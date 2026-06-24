@@ -29,6 +29,7 @@ import type {
   EditingTemplate,
   EditingTemplatePrimitive,
   ResolvedEditingTemplateOverlay,
+  ClipMetadata,
 } from "@openreel/core";
 import { ActionExecutor, ActionHistory } from "@openreel/core";
 import type {
@@ -206,6 +207,7 @@ export interface ProjectState {
     text: string,
     duration?: number,
     style?: Partial<TextStyle>,
+    metadata?: ClipMetadata,
   ) => TextClip | null;
   updateTextContent: (clipId: string, text: string) => TextClip | null;
   updateTextStyle: (
