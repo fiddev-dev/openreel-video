@@ -7,6 +7,9 @@ import {
   Monitor,
   Square,
   FolderOpen,
+  RotateCcw,
+  Scissors,
+  Sparkles,
 } from "lucide-react";
 import { Button, Switch, Label } from "@openreel/ui";
 import { useProjectStore } from "../../stores/project-store";
@@ -17,6 +20,8 @@ import { RecentProjects } from "./RecentProjects";
 import { useRouter } from "../../hooks/use-router";
 import { useEditorPreload } from "../../hooks/useEditorPreload";
 import { useAnalytics, AnalyticsEvents } from "../../hooks/useAnalytics";
+import { useProjectRecovery } from "../../hooks/useProjectRecovery";
+import { RecoveryDialog } from "./RecoveryDialog";
 
 interface FormatOption {
   id: string;
@@ -144,6 +149,9 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ initialTab }) => {
 
   const [viewMode, setViewMode] = useState<ViewMode>(initialTab ?? "home");
   const [hoveredFormat, setHoveredFormat] = useState<string | null>(null);
+
+  const { availableSaves, recover, clearAll } = useProjectRecovery();
+  const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   useEditorPreload(true);
 
@@ -336,7 +344,58 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ initialTab }) => {
             })}
           </div>
 
+          {/* ── Auto Clip Feature Card ── */}
+          <div className="mb-8">
+            <button
+              id="welcome-auto-clip-btn"
+              onClick={() => navigate("upload")}
+              className="
+                group relative w-full flex items-center gap-5 p-5 rounded-2xl
+                bg-gradient-to-r from-violet-500/15 via-fuchsia-500/10 to-pink-500/10
+                border border-violet-500/30 hover:border-violet-400/60
+                hover:from-violet-500/25 hover:via-fuchsia-500/18 hover:to-pink-500/18
+                transition-all duration-300 text-left overflow-hidden
+              "
+            >
+              {/* Decorative glow */}
+              <div className="absolute -right-8 -top-8 w-40 h-40 bg-violet-500/10 rounded-full blur-2xl group-hover:bg-violet-500/20 transition-all duration-500" />
+
+              {/* Icon */}
+              <div className="relative z-10 w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-500/30 to-fuchsia-500/30 border border-violet-500/40 flex items-center justify-center flex-shrink-0">
+                <Scissors size={24} className="text-violet-400 group-hover:rotate-12 transition-transform duration-300" />
+              </div>
+
+              {/* Text */}
+              <div className="relative z-10 flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-base font-bold text-[var(--fg)]">Auto Clip</span>
+                  <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-500/25 text-violet-300 border border-violet-500/30">
+                    <Sparkles size={9} /> AI-Powered
+                  </span>
+                </div>
+                <p className="text-sm text-[var(--fg-3)]">
+                  Turn long videos into viral Shorts automatically — subtitles, face focus, and AI clip scoring included.
+                </p>
+              </div>
+
+              {/* Arrow */}
+              <div className="relative z-10 flex-shrink-0 flex items-center gap-1 text-sm font-semibold text-violet-400 opacity-0 group-hover:opacity-100 translate-x-2 group-hover:translate-x-0 transition-all duration-200">
+                Try it <ArrowRight size={16} />
+              </div>
+            </button>
+          </div>
+
           <div className="flex items-center justify-center gap-3">
+            {availableSaves.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => setShowRecoveryDialog(true)}
+                className="rounded-xl border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 hover:text-primary-hover gap-2"
+              >
+                <RotateCcw size={16} className="text-primary" />
+                Recover unsaved project ({availableSaves.length})
+              </Button>
+            )}
             <Button
               variant="outline"
               onClick={() => setViewMode("templates")}
@@ -390,6 +449,23 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ initialTab }) => {
           </p>
         </div>
       </div>
+      {showRecoveryDialog && availableSaves.length > 0 && (
+        <RecoveryDialog
+          saves={availableSaves}
+          onRecover={async (saveId) => {
+            const success = await recover(saveId);
+            if (success) {
+              setShowRecoveryDialog(false);
+              navigate("editor");
+            }
+          }}
+          onDismiss={() => setShowRecoveryDialog(false)}
+          onClearAll={async () => {
+            await clearAll();
+            setShowRecoveryDialog(false);
+          }}
+        />
+      )}
     </div>
   );
 };

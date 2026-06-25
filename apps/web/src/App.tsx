@@ -5,12 +5,10 @@ import { ScriptViewDialog } from "./components/editor/ScriptViewDialog";
 import { SearchModal } from "./components/editor/SearchModal";
 import { MobileBlocker } from "./components/MobileBlocker";
 import { WelcomeScreen } from "./components/welcome";
-import { RecoveryDialog } from "./components/welcome/RecoveryDialog";
 import { SharePage } from "./pages/SharePage";
 import { useUIStore } from "./stores/ui-store";
 import { useProjectStore } from "./stores/project-store";
 import { useRouter } from "./hooks/use-router";
-import { useProjectRecovery } from "./hooks/useProjectRecovery";
 import { useKieAIPoller } from "./hooks/useKieAIPoller";
 import { SOCIAL_MEDIA_PRESETS, type SocialMediaCategory } from "@openreel/core";
 import { TooltipProvider } from "@openreel/ui";
@@ -18,6 +16,30 @@ import { TooltipProvider } from "@openreel/ui";
 const EditorInterface = lazy(() =>
   import("./components/editor/EditorInterface").then((m) => ({
     default: m.EditorInterface,
+  }))
+);
+
+const AutoClipUploadPage = lazy(() =>
+  import("./pages/auto-clip/AutoClipUploadPage").then((m) => ({
+    default: m.AutoClipUploadPage,
+  }))
+);
+
+const AutoClipConfigPage = lazy(() =>
+  import("./pages/auto-clip/AutoClipConfigPage").then((m) => ({
+    default: m.AutoClipConfigPage,
+  }))
+);
+
+const AutoClipProcessingPage = lazy(() =>
+  import("./pages/auto-clip/AutoClipProcessingPage").then((m) => ({
+    default: m.AutoClipProcessingPage,
+  }))
+);
+
+const AutoClipResultsPage = lazy(() =>
+  import("./pages/auto-clip/AutoClipResultsPage").then((m) => ({
+    default: m.AutoClipResultsPage,
   }))
 );
 
@@ -37,15 +59,20 @@ const PRESET_DIMENSIONS: Record<string, SocialMediaCategory> = {
 };
 
 function App() {
-  const { activeModal, closeModal, skipWelcomeScreen } = useUIStore();
+  const { activeModal, closeModal, skipWelcomeScreen, setSkipWelcomeScreen } = useUIStore();
   const { openModal: openSearchModal } = useUIStore();
   const createNewProject = useProjectStore((state) => state.createNewProject);
-  const { showDialog, availableSaves, recover, dismiss, clearAll } = useProjectRecovery();
 
   const { route, params, navigate, parsedDimensions, fps } = useRouter();
   const hasHandledInitialRoute = useRef(false);
 
   useKieAIPoller();
+
+  useEffect(() => {
+    if (!window.location.hash || window.location.hash === "#/" || window.location.hash === "#/welcome") {
+      setSkipWelcomeScreen(false);
+    }
+  }, [setSkipWelcomeScreen]);
 
   useEffect(() => {
     if (hasHandledInitialRoute.current) return;
@@ -94,6 +121,8 @@ function App() {
       hasHandledInitialRoute.current = true;
     } else if (["welcome", "templates", "recent"].includes(route)) {
       hasHandledInitialRoute.current = true;
+    } else if (["upload", "clip-config", "clip-processing", "clip-results"].includes(route)) {
+      hasHandledInitialRoute.current = true;
     }
   }, [
     route,
@@ -132,6 +161,12 @@ function App() {
         ? "recent"
         : undefined;
   const isSharePage = route === "share" && params.shareId;
+  const isAutoClipPage = [
+    "upload",
+    "clip-config",
+    "clip-processing",
+    "clip-results",
+  ].includes(route);
 
   return (
     <TooltipProvider>
@@ -139,6 +174,13 @@ function App() {
         <MobileBlocker />
         {isSharePage ? (
           <SharePage shareId={params.shareId!} />
+        ) : isAutoClipPage ? (
+          <Suspense fallback={<LoadingSpinner message="Loading..." />}>
+            {route === "upload" && <AutoClipUploadPage />}
+            {route === "clip-config" && <AutoClipConfigPage />}
+            {route === "clip-processing" && <AutoClipProcessingPage />}
+            {route === "clip-results" && <AutoClipResultsPage />}
+          </Suspense>
         ) : showWelcome ? (
           <WelcomeScreen initialTab={initialTab} />
         ) : (
@@ -153,17 +195,6 @@ function App() {
           onClose={closeModal}
         />
         <SearchModal isOpen={activeModal === "search"} onClose={closeModal} />
-        {showDialog && availableSaves.length > 0 && (
-          <RecoveryDialog
-            saves={availableSaves}
-            onRecover={async (saveId) => {
-              const success = await recover(saveId);
-              if (success) navigate("editor");
-            }}
-            onDismiss={dismiss}
-            onClearAll={clearAll}
-          />
-        )}
       </div>
     </TooltipProvider>
   );

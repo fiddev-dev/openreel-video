@@ -6,7 +6,11 @@ export type AppRoute =
   | "new"
   | "templates"
   | "recent"
-  | "share";
+  | "share"
+  | "upload"
+  | "clip-config"
+  | "clip-processing"
+  | "clip-results";
 
 export interface RouteParams {
   dimensions?: string;
@@ -44,6 +48,10 @@ function parseHash(hash: string): RouterState {
     "templates",
     "recent",
     "share",
+    "upload",
+    "clip-config",
+    "clip-processing",
+    "clip-results",
   ];
 
   if (route === "share" && pathParts[1]) {

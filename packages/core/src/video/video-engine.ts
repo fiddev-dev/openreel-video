@@ -771,8 +771,8 @@ export class VideoEngine {
                 y: finalTransform.position.y * scaleY,
               },
               scale: {
-                x: finalTransform.scale.x * scaleX,
-                y: finalTransform.scale.y * scaleY,
+                x: finalTransform.scale.x,
+                y: finalTransform.scale.y,
               },
             };
 
@@ -912,9 +912,22 @@ export class VideoEngine {
           (tc) => tc.trackId === track.id,
         );
         for (const textClip of trackTextClips) {
+          const fontScale = scaleY;
+          const scaledTextClip = {
+            ...textClip,
+            style: {
+              ...textClip.style,
+              fontSize: textClip.style.fontSize * fontScale,
+              strokeWidth: textClip.style.strokeWidth ? textClip.style.strokeWidth * fontScale : undefined,
+              outlineWidth: (textClip.style as any).outlineWidth ? (textClip.style as any).outlineWidth * fontScale : undefined,
+              shadowBlur: textClip.style.shadowBlur ? textClip.style.shadowBlur * fontScale : undefined,
+              shadowOffsetX: textClip.style.shadowOffsetX ? textClip.style.shadowOffsetX * fontScale : undefined,
+              shadowOffsetY: textClip.style.shadowOffsetY ? textClip.style.shadowOffsetY * fontScale : undefined,
+            },
+          };
           await this.renderTextClipWithSubjectMask(
             ctx,
-            textClip,
+            scaledTextClip,
             time,
             width,
             height,
@@ -928,7 +941,19 @@ export class VideoEngine {
     this.renderParticlesToContext(ctx, time, width, height);
 
     for (const subtitle of activeSubtitles) {
-      this.renderSubtitleToCanvasCtx(ctx, subtitle, time, width, height);
+      const fontScale = scaleY;
+      const scaledSubtitle = {
+        ...subtitle,
+        style: subtitle.style ? {
+          ...subtitle.style,
+          fontSize: subtitle.style.fontSize * fontScale,
+          outlineWidth: subtitle.style.outlineWidth ? subtitle.style.outlineWidth * fontScale : undefined,
+          shadowBlur: subtitle.style.shadowBlur ? subtitle.style.shadowBlur * fontScale : undefined,
+          shadowOffsetX: subtitle.style.shadowOffsetX ? subtitle.style.shadowOffsetX * fontScale : undefined,
+          shadowOffsetY: subtitle.style.shadowOffsetY ? subtitle.style.shadowOffsetY * fontScale : undefined,
+        } : undefined,
+      };
+      this.renderSubtitleToCanvasCtx(ctx, scaledSubtitle, time, width, height);
     }
 
     const imageBitmap = await createImageBitmap(canvas);

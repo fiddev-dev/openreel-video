@@ -280,6 +280,19 @@ export class ExportEngine {
       this.videoEngine.exportMode = true;
     }
 
+    if (project.textClips) {
+      titleEngine.loadTextClips(project.textClips);
+    }
+    if (project.shapeClips) {
+      graphicsEngine.loadShapeClips(project.shapeClips);
+    }
+    if (project.svgClips) {
+      graphicsEngine.loadSVGClips(project.svgClips);
+    }
+    if (project.stickerClips) {
+      graphicsEngine.loadStickerClips(project.stickerClips);
+    }
+
     if (timelineDuration <= 0) {
       return {
         success: false,
@@ -658,6 +671,19 @@ export class ExportEngine {
     };
 
     try {
+      if (project.textClips) {
+        titleEngine.loadTextClips(project.textClips);
+      }
+      if (project.shapeClips) {
+        graphicsEngine.loadShapeClips(project.shapeClips);
+      }
+      if (project.svgClips) {
+        graphicsEngine.loadSVGClips(project.svgClips);
+      }
+      if (project.stickerClips) {
+        graphicsEngine.loadStickerClips(project.stickerClips);
+      }
+
       const renderedFrame = await this.videoEngine!.renderFrame(
         project,
         time,

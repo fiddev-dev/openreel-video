@@ -85,8 +85,20 @@ interface ExportState {
   complete: boolean;
 }
 
+export const getPresetDimensions = (projWidth: number, projHeight: number, targetHeight: number) => {
+  if (projWidth < projHeight) {
+    const w = targetHeight;
+    const h = Math.round((w * projHeight) / projWidth);
+    return { width: Math.round(w / 2) * 2, height: Math.round(h / 2) * 2 };
+  } else {
+    const h = targetHeight;
+    const w = Math.round((h * projWidth) / projHeight);
+    return { width: Math.round(w / 2) * 2, height: Math.round(h / 2) * 2 };
+  }
+};
+
 export const Toolbar: React.FC = () => {
-  const { project, undo, redo, renameProject } = useProjectStore();
+  const { project, undo, redo, renameProject, getFullProject } = useProjectStore();
   const {
     openModal,
     selectedItems,
@@ -186,13 +198,16 @@ export const Toolbar: React.FC = () => {
     const duration = project.timeline.duration;
     const estimates = new Map<string, TimeEstimate>();
 
+    const dim4k = getPresetDimensions(project.settings.width, project.settings.height, 2160);
+    const dim1080 = getPresetDimensions(project.settings.width, project.settings.height, 1080);
+
     const configs: Array<{ key: string; width: number; height: number; frameRate: number; codec: "h264" | "h265" | "vp9" | "av1" }> = [
       { key: "mp4", width: project.settings.width, height: project.settings.height, frameRate: 30, codec: "h264" },
-      { key: "4k", width: 3840, height: 2160, frameRate: 30, codec: "h264" },
-      { key: "4k-60-master", width: 3840, height: 2160, frameRate: 60, codec: "h264" },
-      { key: "4k-master", width: 3840, height: 2160, frameRate: 30, codec: "h264" },
-      { key: "1080p-high", width: 1920, height: 1080, frameRate: 30, codec: "h264" },
-      { key: "1080p-60", width: 1920, height: 1080, frameRate: 60, codec: "h264" },
+      { key: "4k", width: dim4k.width, height: dim4k.height, frameRate: 30, codec: "h264" },
+      { key: "4k-60-master", width: dim4k.width, height: dim4k.height, frameRate: 60, codec: "h264" },
+      { key: "4k-master", width: dim4k.width, height: dim4k.height, frameRate: 30, codec: "h264" },
+      { key: "1080p-high", width: dim1080.width, height: dim1080.height, frameRate: 30, codec: "h264" },
+      { key: "1080p-60", width: dim1080.width, height: dim1080.height, frameRate: 60, codec: "h264" },
       { key: "prores", width: project.settings.width, height: project.settings.height, frameRate: 30, codec: "h264" },
     ];
 
@@ -215,7 +230,8 @@ export const Toolbar: React.FC = () => {
       const engine = getExportEngine();
       await engine.initialize();
 
-      const generator = engine.exportVideo(project, videoSettings, writableStream);
+      const fullProject = getFullProject();
+      const generator = engine.exportVideo(fullProject, videoSettings, writableStream);
       let finalResult: ExportResult | undefined;
 
       while (true) {
@@ -245,7 +261,7 @@ export const Toolbar: React.FC = () => {
         throw new Error(finalResult?.error?.message || "Export failed");
       }
     },
-    [project, track],
+    [project, track, getFullProject],
   );
 
   const showSavePicker = useCallback(async (filename: string, ext: string): Promise<FileSystemWritableFileStream> => {
@@ -355,7 +371,8 @@ export const Toolbar: React.FC = () => {
             bitDepth: 24,
           };
 
-          const generator = engine.exportAudio(project, audioSettings);
+          const fullProject = getFullProject();
+          const generator = engine.exportAudio(fullProject, audioSettings);
           let finalResult: ExportResult | undefined;
 
           while (true) {
@@ -400,16 +417,19 @@ export const Toolbar: React.FC = () => {
             frameRate: project.settings.frameRate,
           };
 
+          const dim4k = getPresetDimensions(project.settings.width, project.settings.height, 2160);
+          const dim1080 = getPresetDimensions(project.settings.width, project.settings.height, 1080);
+
           const presets: Record<string, { settings: Partial<VideoExportSettings>; ext: string }> = {
             mp4: { settings: { ...base, format: "mp4", codec: "h264", bitrate: 12000, quality: 85 }, ext: "mp4" },
             gif: { settings: { ...base, format: "webm", codec: "vp9", bitrate: 8000 }, ext: "webm" },
             project: { settings: { ...base, format: "mp4", codec: "h264", bitrate: 12000, quality: 85 }, ext: "mp4" },
-            "4k-60-master": { settings: { ...base, width: 3840, height: 2160, frameRate: 60, format: "mov", codec: "h265", bitrate: 100000, quality: 95 }, ext: "mov" },
-            "4k-master": { settings: { ...base, width: 3840, height: 2160, frameRate: 30, format: "mov", codec: "h265", bitrate: 80000, quality: 95 }, ext: "mov" },
-            "4k-prores": { settings: { ...base, width: 3840, height: 2160, frameRate: 30, format: "mov", codec: "prores", bitrate: 880000, quality: 100 }, ext: "mov" },
-            "4k": { settings: { ...base, width: 3840, height: 2160, frameRate: 30, format: "mp4", codec: "h264", bitrate: 50000, quality: 90 }, ext: "mp4" },
-            "1080p-60": { settings: { ...base, width: 1920, height: 1080, frameRate: 60, format: "mp4", codec: "h264", bitrate: 25000, quality: 95 }, ext: "mp4" },
-            "1080p-high": { settings: { ...base, width: 1920, height: 1080, frameRate: 30, format: "mp4", codec: "h264", bitrate: 20000, quality: 95 }, ext: "mp4" },
+            "4k-60-master": { settings: { ...base, ...dim4k, frameRate: 60, format: "mov", codec: "h265", bitrate: 100000, quality: 95 }, ext: "mov" },
+            "4k-master": { settings: { ...base, ...dim4k, frameRate: 30, format: "mov", codec: "h265", bitrate: 80000, quality: 95 }, ext: "mov" },
+            "4k-prores": { settings: { ...base, ...dim4k, frameRate: 30, format: "mov", codec: "prores", bitrate: 880000, quality: 100 }, ext: "mov" },
+            "4k": { settings: { ...base, ...dim4k, frameRate: 30, format: "mp4", codec: "h264", bitrate: 50000, quality: 90 }, ext: "mp4" },
+            "1080p-60": { settings: { ...base, ...dim1080, frameRate: 60, format: "mp4", codec: "h264", bitrate: 25000, quality: 95 }, ext: "mp4" },
+            "1080p-high": { settings: { ...base, ...dim1080, frameRate: 30, format: "mp4", codec: "h264", bitrate: 20000, quality: 95 }, ext: "mp4" },
             prores: { settings: { ...base, format: "mov", codec: "prores", bitrate: 220000, quality: 100 }, ext: "mov" },
           };
 
@@ -441,7 +461,7 @@ export const Toolbar: React.FC = () => {
         }));
       }
     },
-    [project, track, runExport, showSavePicker],
+    [project, track, runExport, showSavePicker, getFullProject],
   );
 
   const handleCancelExport = useCallback(() => {

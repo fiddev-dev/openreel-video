@@ -181,6 +181,7 @@ export interface ProjectState {
   copyClips: (clipIds: string[]) => void;
   pasteClips: (trackId: string, startTime: number) => Promise<ActionResult[]>;
   duplicateClip: (clipId: string) => Promise<ActionResult>;
+  createBackgroundBlurOverlay: (clipId: string) => Promise<ActionResult>;
   copyEffects: (clipId: string) => void;
   pasteEffects: (clipId: string) => Promise<ActionResult>;
 

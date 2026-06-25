@@ -4,6 +4,7 @@ import { useProjectStore } from "../../stores/project-store";
 import { useTimelineStore } from "../../stores/timeline-store";
 import { useUIStore } from "../../stores/ui-store";
 import { useEngineStore } from "../../stores/engine-store";
+import { useBackgroundTaskStore } from "../../stores/background-task-store";
 import type { Transform, EditingTemplatePrimitive } from "@openreel/core";
 import {
   ChromaKeyEngine,
@@ -696,6 +697,16 @@ export const InspectorPanel: React.FC = () => {
       return;
     }
 
+    const { addTask, updateTask, completeTask, failTask } = useBackgroundTaskStore.getState();
+
+    const taskId = addTask({
+      id: `subtitle-generation-${selectedClip.id}`,
+      name: "Generate Subtitles",
+      description: `Transcribing ${mediaItem.name || "clip"}`,
+      progress: 0,
+      message: "Preparing audio...",
+    });
+
     setIsTranscribing(true);
     setTranscriptionProgress({
       phase: "extracting",
@@ -717,7 +728,13 @@ export const InspectorPanel: React.FC = () => {
       const subtitles = await transcriptionService.transcribeClip(
         regularClip,
         mediaItem,
-        setTranscriptionProgress,
+        (progressInfo) => {
+          setTranscriptionProgress(progressInfo);
+          updateTask(taskId, {
+            progress: progressInfo.progress,
+            message: progressInfo.message,
+          });
+        },
       );
 
       for (const subtitle of subtitles) {
@@ -732,6 +749,7 @@ export const InspectorPanel: React.FC = () => {
         progress: 100,
         message: `Added ${subtitles.length} subtitles`,
       });
+      completeTask(taskId);
 
       setTimeout(() => {
         setTranscriptionProgress(null);
@@ -739,12 +757,14 @@ export const InspectorPanel: React.FC = () => {
       }, 2000);
     } catch (error) {
       console.error("[Subtitles] Transcription failed:", error);
+      const errMsg = error instanceof Error ? error.message : "Transcription failed";
       setTranscriptionProgress({
         phase: "error",
         progress: 0,
-        message:
-          error instanceof Error ? error.message : "Transcription failed",
+        message: errMsg,
       });
+      failTask(taskId, errMsg);
+
       setTimeout(() => {
         setTranscriptionProgress(null);
         setIsTranscribing(false);

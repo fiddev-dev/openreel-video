@@ -52,6 +52,7 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
     copiedEffects,
     closeGapBeforeClip,
     clearClipEffects,
+    createBackgroundBlurOverlay,
   } = useProjectStore();
   const { playheadPosition } = useTimelineStore();
 
@@ -191,6 +192,18 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
     })();
   };
 
+  const handleBackgroundBlurOverlay = async () => {
+    toast.info("Applying Background Blur Overlay", "Processing clip duplication and background styling...");
+    const result = await createBackgroundBlurOverlay(clip.id);
+    if (result.success) {
+      toast.success("Background Blur Overlay Applied", "Successfully duplicated clip as overlay and blurred background.");
+      window.dispatchEvent(new CustomEvent("openreel:preview-invalidate"));
+    } else {
+      toast.error("Failed to Apply", result.error?.message || "An unknown error occurred.");
+    }
+    onClose?.();
+  };
+
   const handleCopyEffects = () => {
     copyEffects(clip.id);
     onClose?.();
@@ -257,10 +270,16 @@ export const ClipContextMenu: React.FC<ClipContextMenuProps> = ({
       </ContextMenuItem>
 
       {(isVideo || isImage) && (
-        <ContextMenuItem onClick={handleAutoFocusFace}>
-          <Sparkles className="mr-2 h-4 w-4 text-amber-400" />
-          Auto Focus Face
-        </ContextMenuItem>
+        <>
+          <ContextMenuItem onClick={handleAutoFocusFace}>
+            <Sparkles className="mr-2 h-4 w-4 text-amber-400" />
+            Auto Focus Face
+          </ContextMenuItem>
+          <ContextMenuItem onClick={handleBackgroundBlurOverlay}>
+            <Layers className="mr-2 h-4 w-4 text-cyan-400" />
+            Background Blur Overlay
+          </ContextMenuItem>
+        </>
       )}
 
       {(isVideo || isImage) && (

@@ -1609,7 +1609,7 @@ export const Preview: React.FC = () => {
             );
             const isStabilized = vidstab.hasStabilized(clip.id);
             const mediaTime = isStabilized ? adjustedLocalTime : (clip.inPoint || 0) + adjustedLocalTime;
-            const cacheKey = isStabilized ? `${clip.mediaId}:stabilized` : clip.mediaId;
+            const cacheKey = isStabilized ? `${clip.id}:stabilized` : clip.id;
             let cached = videoElementCacheRef.current.get(cacheKey);
 
             if (!cached) {
@@ -1659,10 +1659,12 @@ export const Preview: React.FC = () => {
             );
             const seekTime =
               clampedTime <= 0 && video.duration > 0.002 ? 0.001 : clampedTime;
+            let didSeek = false;
             if (
               Math.abs(video.currentTime - seekTime) > 0.01 ||
               video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
             ) {
+              didSeek = true;
               video.currentTime = seekTime;
               await new Promise<void>((res) => {
                 let settled = false;
@@ -1689,24 +1691,26 @@ export const Preview: React.FC = () => {
               return;
             }
 
-            await new Promise<void>((res) => {
-              if (!("requestVideoFrameCallback" in video)) {
-                res();
-                return;
-              }
+            if (didSeek) {
+              await new Promise<void>((res) => {
+                if (!("requestVideoFrameCallback" in video)) {
+                  res();
+                  return;
+                }
 
-              let settled = false;
-              let timeoutId: ReturnType<typeof setTimeout> | null = null;
-              const finish = () => {
-                if (settled) return;
-                settled = true;
-                if (timeoutId) clearTimeout(timeoutId);
-                res();
-              };
+                let settled = false;
+                let timeoutId: ReturnType<typeof setTimeout> | null = null;
+                const finish = () => {
+                  if (settled) return;
+                  settled = true;
+                  if (timeoutId) clearTimeout(timeoutId);
+                  res();
+                };
 
-              video.requestVideoFrameCallback(finish);
-              timeoutId = setTimeout(finish, 300);
-            });
+                video.requestVideoFrameCallback(finish);
+                timeoutId = setTimeout(finish, 300);
+              });
+            }
 
             if (isStaleRequest()) {
               resolve(null);
@@ -1740,33 +1744,27 @@ export const Preview: React.FC = () => {
               return;
             }
 
+            const videoAspect = video.videoWidth / video.videoHeight;
+            const canvasAspect = canvasWidth / canvasHeight;
+            let drawWidth = canvasWidth;
+            let drawHeight = canvasHeight;
+
+            if (videoAspect > canvasAspect) {
+              drawHeight = Math.round(canvasWidth / videoAspect);
+            } else {
+              drawWidth = Math.round(canvasHeight * videoAspect);
+            }
+
             const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = canvasWidth;
-            tempCanvas.height = canvasHeight;
+            tempCanvas.width = drawWidth;
+            tempCanvas.height = drawHeight;
             const tempCtx = tempCanvas.getContext("2d");
             if (!tempCtx) {
               resolve(null);
               return;
             }
 
-            const videoAspect = video.videoWidth / video.videoHeight;
-            const canvasAspect = canvasWidth / canvasHeight;
-            let drawWidth = canvasWidth;
-            let drawHeight = canvasHeight;
-            let offsetX = 0;
-            let offsetY = 0;
-
-            if (videoAspect > canvasAspect) {
-              drawHeight = canvasWidth / videoAspect;
-              offsetY = (canvasHeight - drawHeight) / 2;
-            } else {
-              drawWidth = canvasHeight * videoAspect;
-              offsetX = (canvasWidth - drawWidth) / 2;
-            }
-
-            tempCtx.fillStyle = previewBgRef.current;
-            tempCtx.fillRect(0, 0, canvasWidth, canvasHeight);
-            tempCtx.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
+            tempCtx.drawImage(video, 0, 0, drawWidth, drawHeight);
 
             const frame = await createImageBitmap(tempCanvas);
             if (isStaleRequest()) {
@@ -1777,10 +1775,11 @@ export const Preview: React.FC = () => {
             scheduleScrubVideoRelease();
             resolve(frame);
           } catch {
-            const cached = videoElementCacheRef.current.get(clip.mediaId);
+            const cacheKey = vidstab.hasStabilized(clip.id) ? `${clip.id}:stabilized` : clip.id;
+            const cached = videoElementCacheRef.current.get(cacheKey);
             if (cached) {
               releaseVideoElement(cached);
-              videoElementCacheRef.current.delete(clip.mediaId);
+              videoElementCacheRef.current.delete(cacheKey);
             }
             scheduleScrubVideoRelease();
             resolve(null);
@@ -4191,8 +4190,9 @@ export const Preview: React.FC = () => {
             (a, b) => b.trackIndex - a.trackIndex,
           );
           const activeTextNeedsSubject = hasBehindSubjectText(activeTextClips);
+          const isMultiLayer = sortedClips.length > 1;
           const useGPUFrames =
-            rendererRef.current?.type === "webgpu" && !activeTextNeedsSubject;
+            rendererRef.current?.type === "webgpu" && !activeTextNeedsSubject && !isMultiLayer;
 
           const imageClipFrames: Array<{
             clip: (typeof sortedClips)[0]["clip"];
@@ -4373,7 +4373,8 @@ export const Preview: React.FC = () => {
             const useGPU =
               rendererRef.current &&
               rendererRef.current.type === "webgpu" &&
-              !activeTextNeedsSubject;
+              !activeTextNeedsSubject &&
+              !isMultiLayer;
 
             if (useGPU) {
               const gpuLayers: GPULayer[] = [];

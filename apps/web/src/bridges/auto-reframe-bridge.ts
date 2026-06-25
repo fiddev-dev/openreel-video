@@ -262,7 +262,7 @@ export class AutoReframeBridge {
       const ctx = canvas.getContext("2d")!;
 
       // --- 3. Sample frames — one every 2 seconds, capped at 30 ---
-      const SAMPLE_INTERVAL = 2.0; // seconds
+      const SAMPLE_INTERVAL = 2.0; // seconds between keyframes
       const MAX_SAMPLES = 30;
       const sampleTimes: number[] = [];
       for (let t = inPoint; t < outPoint; t += SAMPLE_INTERVAL) {
@@ -274,21 +274,25 @@ export class AutoReframeBridge {
         sampleTimes.push(inPoint + clipDuration / 2);
       }
 
-      // --- 4. Detect faces in each sampled frame ---
+      // --- 4. Detect faces per frame, generate per-frame keyframes ---
       const ZOOM_MULTIPLIER = 3.5;
       const VERTICAL_ALIGN = 0.5; // center face vertically
 
-      // Collect candidate crop parameters from all frames where a face was found
-      const cropXList: number[] = [];
-      const cropYList: number[] = [];
-      const cropWList: number[] = [];
-      const cropHList: number[] = [];
-      const scaleList: number[] = [];
+      // Per-frame results: clip-local time → {posX, posY, scale}
+      interface FrameKF {
+        clipTime: number;
+        posX: number;
+        posY: number;
+        scale: number;
+      }
+      const frameKeyframes: FrameKF[] = [];
 
       for (let i = 0; i < sampleTimes.length; i++) {
         const t = sampleTimes[i];
+        // Clip-local time (t relative to inPoint)
+        const clipLocalTime = t - inPoint;
         const prog = 25 + Math.round((i / sampleTimes.length) * 55);
-        onProgress?.(prog, `Analyzing frame ${i + 1}/${sampleTimes.length}...`);
+        onProgress?.(prog, `Analyzing frame ${i + 1}/${sampleTimes.length} at ${clipLocalTime.toFixed(1)}s...`);
 
         video.currentTime = t;
         await new Promise<void>((resolve) => {
@@ -301,7 +305,10 @@ export class AutoReframeBridge {
         const detections = await engine.detectFacesRaw(bitmap);
         bitmap.close();
 
-        if (detections.length === 0) continue;
+        if (detections.length === 0) {
+          // No face — will use previous keyframe or fallback (fill in after loop)
+          continue;
+        }
 
         // Pick the largest/most confident face
         const best = detections.reduce((a: any, b: any) => {
@@ -337,73 +344,70 @@ export class AutoReframeBridge {
         cx = Math.max(0, Math.min(cx, videoWidth - cropW));
         cy = Math.max(0, Math.min(cy, videoHeight - cropH));
 
-        cropXList.push(cx);
-        cropYList.push(cy);
-        cropWList.push(cropW);
-        cropHList.push(cropH);
-
         // Compute scale and position for the timeline keyframe
         const scaleX = videoWidth / cropW;
         const scaleY = videoHeight / cropH;
         const scale = Math.max(scaleX, scaleY);
-        scaleList.push(scale);
-      }
 
-      // --- 5. Compute median of all collected crop values ---
-      const median = (arr: number[]): number => {
-        if (arr.length === 0) return 0;
-        const sorted = [...arr].sort((a, b) => a - b);
-        const mid = Math.floor(sorted.length / 2);
-        return sorted.length % 2 !== 0
-          ? sorted[mid]
-          : (sorted[mid - 1] + sorted[mid]) / 2;
-      };
-
-      onProgress?.(82, "Computing optimal fixed camera position...");
-
-      let posX = 0;
-      let posY = 0;
-      let scale = 1;
-
-      if (cropXList.length > 0) {
-        const medCropX = median(cropXList);
-        const medCropY = median(cropYList);
-        const medCropW = median(cropWList);
-        const medCropH = median(cropHList);
-
-        const dx = videoWidth / 2 - (medCropX + medCropW / 2);
-        const dy = videoHeight / 2 - (medCropY + medCropH / 2);
-        scale = median(scaleList);
+        const dx = videoWidth / 2 - (cx + cropW / 2);
+        const dy = videoHeight / 2 - (cy + cropH / 2);
         const factor = baseScale * scale;
-        posX = dx * factor;
-        posY = dy * factor;
+        const posX = dx * factor;
+        const posY = dy * factor;
+
+        frameKeyframes.push({ clipTime: clipLocalTime, posX, posY, scale });
       }
-      // If no faces were ever detected → keep default (scale 1, center)
 
-      // --- 6. Apply a single static keyframe set (no animation) ---
-      onProgress?.(95, "Applying fixed camera position...");
+      // --- 5. Build timeline keyframes from per-frame detections ---
+      onProgress?.(82, "Building face-tracking keyframe segments...");
 
-      const staticTime = 0; // Always clip-local time 0
       const kfId = () => Math.random().toString(36).substring(2, 9);
+      const timelineKeyframes: Keyframe[] = [];
 
-      const timelineKeyframes = [
-        { id: `kf-posx-${kfId()}`, time: staticTime, property: "position.x", value: posX, easing: "linear" as const },
-        { id: `kf-posy-${kfId()}`, time: staticTime, property: "position.y", value: posY, easing: "linear" as const },
-        { id: `kf-scalex-${kfId()}`, time: staticTime, property: "scale.x", value: scale, easing: "linear" as const },
-        { id: `kf-scaley-${kfId()}`, time: staticTime, property: "scale.y", value: scale, easing: "linear" as const },
-      ];
+      if (frameKeyframes.length === 0) {
+        // No faces detected — apply single default position at t=0
+        timelineKeyframes.push(
+          { id: `kf-posx-${kfId()}`, time: 0, property: "position.x", value: 0, easing: "linear" },
+          { id: `kf-posy-${kfId()}`, time: 0, property: "position.y", value: 0, easing: "linear" },
+          { id: `kf-scalex-${kfId()}`, time: 0, property: "scale.x", value: 1, easing: "linear" },
+          { id: `kf-scaley-${kfId()}`, time: 0, property: "scale.y", value: 1, easing: "linear" },
+        );
+      } else {
+        // Calculate average values to keep the camera completely static (no panning curve/movement)
+        let sumPosX = 0;
+        let sumPosY = 0;
+        let sumScale = 0;
+        for (const kf of frameKeyframes) {
+          sumPosX += kf.posX;
+          sumPosY += kf.posY;
+          sumScale += kf.scale;
+        }
+        const avgPosX = sumPosX / frameKeyframes.length;
+        const avgPosY = sumPosY / frameKeyframes.length;
+        const avgScale = sumScale / frameKeyframes.length;
 
+        // Apply a single static keyframe at t=0
+        timelineKeyframes.push(
+          { id: `kf-posx-${kfId()}`, time: 0, property: "position.x", value: avgPosX, easing: "linear" },
+          { id: `kf-posy-${kfId()}`, time: 0, property: "position.y", value: avgPosY, easing: "linear" },
+          { id: `kf-scalex-${kfId()}`, time: 0, property: "scale.x", value: avgScale, easing: "linear" },
+          { id: `kf-scaley-${kfId()}`, time: 0, property: "scale.y", value: avgScale, easing: "linear" },
+        );
+      }
+
+      // --- 6. Apply keyframes to project store ---
+      onProgress?.(95, "Applying static face centering...");
       store.updateClipKeyframes(clip.id, timelineKeyframes);
 
-      onProgress?.(100, "Fixed camera position applied!");
+      onProgress?.(100, "Face centering complete!");
 
       return {
         keyframes: [],        // empty — we handled them ourselves
         outputWidth: projectWidth,
         outputHeight: projectHeight,
         success: true,
-        message: cropXList.length > 0
-          ? `Fixed camera on face (${cropXList.length} samples)`
+        message: frameKeyframes.length > 0
+          ? "Static face centering applied (centered on speaker)"
           : "No face detected — kept default position",
       };
     } finally {

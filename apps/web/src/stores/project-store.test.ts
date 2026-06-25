@@ -1598,4 +1598,125 @@ Ignored block`;
     expect(captionClips).toHaveLength(1);
     expect(captionClips[0]?.text).toBe("Hello world");
   });
+
+  describe("createBackgroundBlurOverlay", () => {
+    it("should successfully duplicate a video clip, zoom and blur the background, and mute it", async () => {
+      // 1. Setup a project with a video track and a clip
+      const mockProject = {
+        id: "test-project-id",
+        name: "Test Project",
+        createdAt: Date.now(),
+        modifiedAt: Date.now(),
+        settings: {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          aspectRatio: "16:9",
+        },
+        mediaLibrary: {
+          items: [
+            {
+              id: "media-1",
+              name: "video.mp4",
+              type: "video",
+              metadata: { duration: 10, width: 1920, height: 1080 },
+            },
+          ],
+        },
+        timeline: {
+          tracks: [
+            {
+              id: "track-1",
+              type: "video" as const,
+              name: "Video 1",
+              clips: [
+                {
+                  id: "clip-1",
+                  mediaId: "media-1",
+                  trackId: "track-1",
+                  startTime: 1,
+                  duration: 5,
+                  inPoint: 0,
+                  outPoint: 5,
+                  volume: 1,
+                  effects: [],
+                  audioEffects: [],
+                  transform: {
+                    position: { x: 10, y: 20 },
+                    scale: { x: 1.5, y: 1.5 },
+                    rotation: 45,
+                    anchor: { x: 0.2, y: 0.3 },
+                    opacity: 1,
+                    crop: { x: 50, y: 50, width: 200, height: 200 },
+                  },
+                  keyframes: [
+                    { id: "kf-1", time: 0, property: "scale.x", value: 1.5, easing: "linear" as const },
+                  ],
+                },
+              ],
+              transitions: [],
+              locked: false,
+              hidden: false,
+              muted: false,
+              solo: false,
+            },
+          ],
+          subtitles: [],
+          duration: 10,
+          markers: [],
+        },
+      };
+
+      useProjectStore.getState().loadProject(mockProject as any);
+
+      // 2. Trigger the blur overlay action
+      const result = await useProjectStore.getState().createBackgroundBlurOverlay("clip-1");
+      expect(result.success).toBe(true);
+
+      const updatedProject = useProjectStore.getState().project;
+
+      // 3. Verify that a new track is created and inserted at index 0 (which is above index 1 visually/compositely)
+      expect(updatedProject.timeline.tracks).toHaveLength(2);
+      
+      const overlayTrack = updatedProject.timeline.tracks[0];
+      const bgTrack = updatedProject.timeline.tracks[1];
+
+      expect(overlayTrack.type).toBe("video");
+      expect(bgTrack.type).toBe("video");
+
+      // 4. Verify overlay clip properties (on the top track, index 0)
+      expect(overlayTrack.clips).toHaveLength(1);
+      const overlayClip = overlayTrack.clips[0];
+      expect(overlayClip.id).not.toBe("clip-1");
+      expect(overlayClip.mediaId).toBe("media-1");
+      expect(overlayClip.startTime).toBe(1);
+      expect(overlayClip.duration).toBe(5);
+      expect(overlayClip.volume).toBe(1);
+      expect(overlayClip.transform.fitMode).toBe("contain");
+      expect(overlayClip.transform.scale).toEqual({ x: 1.5, y: 1.5 });
+      expect(overlayClip.transform.position).toEqual({ x: 10, y: 20 });
+      expect(overlayClip.transform.rotation).toBe(45);
+      expect(overlayClip.transform.crop).toEqual({ x: 50, y: 50, width: 200, height: 200 });
+      expect(overlayClip.transform.anchor).toEqual({ x: 0.2, y: 0.3 });
+      expect(overlayClip.keyframes).toEqual([]);
+
+      // 5. Verify background clip properties (original clip on shifted track, index 1)
+      expect(bgTrack.clips).toHaveLength(1);
+      const bgClip = bgTrack.clips[0];
+      expect(bgClip.id).toBe("clip-1");
+      expect(bgClip.volume).toBe(0);
+      expect(bgClip.transform.fitMode).toBe("cover");
+      expect(bgClip.transform.scale).toEqual({ x: 1, y: 1 });
+      expect(bgClip.transform.position).toEqual({ x: 0, y: 0 });
+      expect(bgClip.transform.rotation).toBe(0);
+      expect(bgClip.transform.crop).toBeUndefined();
+      expect(bgClip.transform.anchor).toEqual({ x: 0.5, y: 0.5 });
+      expect(bgClip.keyframes).toEqual([]);
+      
+      // Verify blur effect is added
+      expect(bgClip.effects).toHaveLength(1);
+      expect(bgClip.effects[0].type).toBe("blur");
+      expect(bgClip.effects[0].params.radius).toBe(30);
+    });
+  });
 });

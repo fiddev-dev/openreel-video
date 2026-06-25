@@ -201,6 +201,7 @@ export interface ProjectState {
     clipBId: string,
   ) => Transition | undefined;
   separateAudio: (clipId: string) => Promise<ActionResult>;
+  createBackgroundBlurOverlay: (clipId: string) => Promise<ActionResult>;
   updateClipTransform: (
     clipId: string,
     transform: Partial<Transform>,
@@ -481,6 +482,7 @@ export interface ProjectState {
   checkForRecovery: () => Promise<AutoSaveMetadata[]>;
   recoverFromAutoSave: (saveId: string) => Promise<boolean>;
   forceSave: () => Promise<void>;
+  getFullProject: () => Project;
 }
 
 /**
@@ -3133,6 +3135,181 @@ export const useProjectStore = create<ProjectState>()(
           set({ project: finalProject });
         }
         return result;
+      },
+
+      createBackgroundBlurOverlay: async (clipId: string) => {
+        const { getClip, project, addTrack, actionExecutor } = get();
+        const clip = getClip(clipId);
+        if (!clip) {
+          return {
+            success: false,
+            error: {
+              code: "INVALID_PARAMS" as const,
+              message: "Clip not found",
+            },
+          };
+        }
+
+        const trackIndex = project.timeline.tracks.findIndex((t) =>
+          t.clips.some((c) => c.id === clipId),
+        );
+        if (trackIndex === -1) {
+          return {
+            success: false,
+            error: {
+              code: "INVALID_PARAMS" as const,
+              message: "Track not found",
+            },
+          };
+        }
+        const track = project.timeline.tracks[trackIndex];
+
+        if (track.type !== "video" && track.type !== "image") {
+          return {
+            success: false,
+            error: {
+              code: "INCOMPATIBLE_TYPE" as const,
+              message: "Background blur overlay can only be created for video or image clips.",
+            },
+          };
+        }
+
+        // 1. Add a new track of the same type at the current track's index.
+        const trackResult = await addTrack(track.type, trackIndex);
+        if (!trackResult.success) {
+          return trackResult;
+        }
+
+        // Get the updated project state after adding track
+        const { project: updatedProject } = get();
+        const newTrack = updatedProject.timeline.tracks[trackIndex];
+        if (!newTrack) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND" as const,
+              message: "Failed to create overlay track",
+            },
+          };
+        }
+
+        // 2. Create the overlay clip on the new track as a duplicate of the original clip.
+        const projectCopy = structuredClone(updatedProject);
+        const addClipAction: Action = {
+          type: "clip/add",
+          id: uuidv4(),
+          timestamp: Date.now(),
+          params: {
+            trackId: newTrack.id,
+            mediaId: clip.mediaId,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            inPoint: clip.inPoint,
+            outPoint: clip.outPoint,
+            volume: clip.volume,
+            effects: structuredClone(clip.effects).filter(
+              (e: any) => e.type !== "blur" && e.type !== "motion-blur" && e.type !== "radial-blur"
+            ),
+            audioEffects: clip.audioEffects
+              ? structuredClone(clip.audioEffects)
+              : undefined,
+            keyframes: [],
+            transform: clip.transform ? structuredClone(clip.transform) : undefined,
+            ...(clip.fade ? { fade: clip.fade } : {}),
+            ...(clip.speed !== undefined ? { speed: clip.speed } : {}),
+            ...(clip.reversed !== undefined ? { reversed: clip.reversed } : {}),
+            ...(clip.audioTrackIndex !== undefined
+              ? { audioTrackIndex: clip.audioTrackIndex }
+              : {}),
+          },
+        };
+
+        const result = await actionExecutor.execute(addClipAction, projectCopy);
+        if (!result.success) {
+          return result;
+        }
+
+        const finalProjectAfterClip = projectCopy;
+        const updatedNewTrack = finalProjectAfterClip.timeline.tracks[trackIndex];
+        const newClip = updatedNewTrack.clips[updatedNewTrack.clips.length - 1];
+        if (!newClip) {
+          return {
+            success: false,
+            error: {
+              code: "CLIP_NOT_FOUND" as const,
+              message: "Failed to create overlay clip",
+            },
+          };
+        }
+
+        // 3. Update the original background clip (which is now shifted to index trackIndex + 1)
+        const blurEffectId = uuidv4();
+        const blurEffect = {
+          id: blurEffectId,
+          type: "blur" as const,
+          enabled: true,
+          params: {
+            radius: 30,
+            type: "gaussian" as const,
+          },
+        };
+
+        let bgClipFound = false;
+        const finalTracks = finalProjectAfterClip.timeline.tracks.map((t) => {
+          const cIdx = t.clips.findIndex((c) => c.id === clipId);
+          if (cIdx === -1) return t;
+
+          bgClipFound = true;
+          const bgClip = t.clips[cIdx];
+          const updatedBgClip = {
+            ...bgClip,
+            volume: 0, // Mute background clip to avoid duplicate audio issues
+            keyframes: [], // Reset keyframes to prevent face tracking or zoom overriding the scale/position
+            transform: {
+              ...bgClip.transform,
+              fitMode: "cover" as const, // Zoom to fill screen
+              scale: { x: 1, y: 1 },     // Reset scale to default to let cover scale properly
+              position: { x: 0, y: 0 },  // Reset position to center of screen
+              rotation: 0,               // Reset rotation to align with screen edges
+              crop: undefined,           // Clear crop parameters
+              anchor: { x: 0.5, y: 0.5 }, // Reset anchor
+            },
+            effects: [
+              ...bgClip.effects.filter((e: any) => e.type !== "blur" && e.type !== "motion-blur" && e.type !== "radial-blur"),
+              blurEffect,
+            ],
+          };
+
+          const newClips = [...t.clips];
+          newClips[cIdx] = updatedBgClip;
+          return { ...t, clips: newClips };
+        });
+
+        if (!bgClipFound) {
+          return {
+            success: false,
+            error: {
+              code: "CLIP_NOT_FOUND" as const,
+              message: "Failed to find original background clip after duplication",
+            },
+          };
+        }
+
+        const finalProject = {
+          ...finalProjectAfterClip,
+          timeline: {
+            ...finalProjectAfterClip.timeline,
+            tracks: finalTracks,
+          },
+          modifiedAt: Date.now(),
+        };
+
+        // Sync effects in browser bridge
+        syncClipEffectsBridge(finalProject, clipId);
+        syncClipEffectsBridge(finalProject, newClip.id);
+
+        set({ project: finalProject });
+        return { success: true };
       },
 
       copyEffects: (clipId: string) => {
